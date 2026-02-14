@@ -12,10 +12,10 @@ function App() {
     setCount((c) => c + 1);
   }, []);
 
-  // 에러 1: Callback 함수 없음
+  // 에러 수정: Callback 함수 없음
   const triggerCallbackError = useCallback(() => {
     try {
-      const callback = undefined;
+      const callback = () => { console.log('callback function'); };
       callback(); // Sentry #1
     } catch (error) {
       captureException(error);
@@ -37,8 +37,8 @@ function App() {
   // 에러 3: 배열 아닌 값에 map()
   const triggerMapError = useCallback(() => {
     try {
-      const invalid = "string";
-      invalid.map((item) => item.name); // Sentry #3
+      const invalid = [];
+      invalid.map((item) => item.name);
     } catch (error) {
       captureException(error);
       setErrorHistory((prev) => [...prev, "map-error"]);
@@ -54,9 +54,7 @@ function App() {
         <section className="counter-section">
           <h2>정상 동작</h2>
           <div className="counter-display">{count}</div>
-          <button className="btn btn-success" onClick={increment}>
-            카운트 +1
-          </button>
+          <button className="btn btn-success" onClick={increment}>카운트 +1</button>
         </section>
 
         {/* 에러 히스토리 */}
@@ -80,25 +78,15 @@ function App() {
           <h2>에러 재현</h2>
 
           <div className="error-grid">
-            <button className="btn btn-danger" onClick={triggerCallbackError}>
-              Callback 오류
-              <small>undefined 함수</small>
-            </button>
+            <button className="btn btn-danger" onClick={triggerCallbackError}>Callback 오류<small>undefined 함수</small></button>
 
-            <button className="btn btn-warning" onClick={triggerNullError}>
-              Null 참조
-              <small>data.items</small>
-            </button>
+            <button className="btn btn-warning" onClick={triggerNullError}>Null 참조<small>data.items</small></button>
 
-            <button className="btn btn-danger" onClick={triggerMapError}>
-              Map 오류
-              <small>string.map()</small>
-            </button>
+            <button className="btn btn-danger" onClick={triggerMapError}>Map 오류<small>string.map()</small></button>
           </div>
         </section>
       </main>
     </div>
   );
 }
-
 export default App;
