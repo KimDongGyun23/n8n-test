@@ -1,0 +1,349 @@
+{
+  "name": "Sentry Auto-Fix PR Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sentry-error",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Sentry Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "sentry-error"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Sentry에서 전달된 에러 이벤트 데이터를 파싱하여 n8n 워크플로우에서 사용할 수 있는 형식으로 변환하는 Function 노드\n *\n * - Sentry 이벤트 구조에 따라 에러 메시지, 파일명, 라인 번호, 스택 트레이스 등을 추출\n * - event_id가 없는 경우 현재 타임스탬프를 기반으로 고유한 ID 생성\n * - 최종적으로 다음 노드로 전달할 JSON 객체 배열 반환\n */\nconst body = $input.first().json.body;\n\nlet errorMessage = \"\";\nlet filename = \"\";\nlet lineno = 0;\nlet stacktrace = \"\";\nlet eventId = \"\";\n\n/**\n * Sentry 이벤트 데이터에서 에러 메시지, 파일명, 라인 번호, 스택 트레이스 등을 추출\n *\n * - event 객체가 존재하는 경우 우선적으로 해당 객체에서 정보 추출\n * - event 객체 내 exception이 존재하는 경우 type과 value를 조합하여 에러 메시지 생성\n * - 스택 트레이스는 frames 배열을 순회하여 각 프레임의 함수명, 파일명, 라인/컬럼 번호를 조합하여 생성\n * - event 객체가 없는 경우 body에서 직접 정보 추출 시도\n */\nif (body.event) {\n  const event = body.event;\n  eventId = event.event_id || \"\";\n  errorMessage = event.title || event.message || \"\";\n\n  // event 객체 내 exception이 존재하는 경우 type과 value를 조합하여 에러 메시지 생성\n  const exceptionValues = event.exception && event.exception.values;\n  if (exceptionValues) {\n    const exc = exceptionValues[0];\n    errorMessage = exc.type + \": \" + exc.value;\n\n    // 스택 트레이스는 frames 배열을 순회하여 각 프레임의 함수명, 파일명, 라인/컬럼 번호를 조합하여 생성\n    const frames = exc.stacktrace && exc.stacktrace.frames;\n    if (frames && frames.length > 0) {\n      const lastFrame = frames[frames.length - 1];\n      filename = lastFrame.filename || \"\";\n      lineno = lastFrame.lineno || 0;\n      stacktrace = frames\n        .map((f) => `at ${f.function || \"?\"} (${f.filename}:${f.lineno}:${f.colno})`)\n        .join(\"\\n\");\n    }\n  }\n}\n\n// event 객체가 없는 경우 body에서 직접 정보 추출 시도\nif (!errorMessage && body.message) {\n  errorMessage = body.message;\n  filename = body.filename || \"\";\n  lineno = body.lineno || 0;\n  stacktrace = body.stacktrace || \"\";\n  eventId = body.event_id || \"\";\n}\n\n// event_id가 없는 경우 현재 타임스탬프를 기반으로 고유한 ID 생성\nif (!eventId) eventId = \"evt-\" + Date.now();\n\nreturn [{ json: { event_id: eventId, message: errorMessage, filename, lineno, stacktrace } }];\n"
+      },
+      "id": "parse-sentry",
+      "name": "Parse Sentry Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/contents/{{ $json.filename }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-source",
+      "name": "Get Source from GitHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * GitHub API에서 받은 파일 정보와 Sentry 에러 정보를 바탕으로\n * Ollama에 보낼 프롬프트와 요청 본문을 준비하는 n8n Function 노드\n *\n * - GitHub API 응답에서 파일 내용을 디코딩하여 원본 소스 코드 추출\n * - Sentry 에러 정보와 원본 소스 코드를 포함한 프롬프트 생성\n * - Ollama API 요청에 사용할 JSON body 생성\n */\nconst githubResponse = $input.first().json;\n\n// 이전 노드에서 Sentry 에러 정보 가져오기\nconst prevData = $(\"Parse Sentry Payload\").first().json;\n\n// GitHub API에서 받은 파일 내용을 Base64에서 UTF-8로 디코딩하여 원본 소스 코드 추출\nconst sourceCode = Buffer.from(githubResponse.content, \"base64\").toString(\"utf-8\");\n\nconst prompt = `당신은 시니어 프론트엔드 개발자입니다. 아래 에러를 분석하고 수정 코드를 JSON으로 응답하세요.\n\n## 에러 정보\n- 메시지: ${prevData.message}\n- 파일: ${prevData.filename}\n- 라인: ${prevData.lineno}\n- 스택트레이스:\n${prevData.stacktrace}\n\n## 원본 소스 코드\n\\`\\`\\`\n${sourceCode}\n\\`\\`\\`\n\n## 분석 및 수정 요구사항\n- 에러 원인 3가지 추측 (가능성 순, 각 1문장)\n- 수정 전략 (왜 이 방법이 최선인가)\n- fix_code: import부터 export까지 **전체 파일** 수정본\n- PR 본문: 동료 개발자가 이해하기 쉬운 상세 설명 + 배경 + 테스트 방법\n\n## 중요 규칙\n- fix_code에는 반드시 파일의 전체 코드를 포함 (import ~ export)\n- 수정이 필요한 부분만 변경하고, 나머지는 원본과 동일하게 유지\n- 원인 3가지는 구체적\n- 테스트 단계는 재현 + 검증 포함\n- 절대로 함수 하나만 반환하지 마세요. 전체 파일을 반환\n\n## 응답 형식 (JSON만 출력, 모든 값은 실제 분석 내용으로 채우세요)\n{\n  \"summary\": \"{에러 원인을 한줄로 요약}\",\n  \"possible_causes\": [\n    \"{가장 가능성 높은 원인}\",\n    \"{두 번째 가능성}\",\n    \"{세 번째 가능성}\"\n  ],\n  \"fix_strategy\": \"{왜 이 수정 방법을 선택했는지 2-3문장}\",\n  \"fix_code\": \"{import부터 export까지 전체 수정된 파일 코드}\",\n  \"commit_msg\": \"{fix: 구체적인 수정 내용, 50자 이내}\",\n  \"pr_title\": \"{Auto-fix: 구체적인 에러명과 수정 내용}\",\n  \"pr_body\": \"{### 문제 분석\\\\n구체적 원인 설명\\\\n\\\\n### 수정 내용\\\\n무엇을 어떻게 고쳤는지\\\\n\\\\n### 테스트 방법\\\\n1. 구체적 재현 단계\\\\n2. 수정 확인 방법\\\\n\\\\n### 관련 에러 예방법\\\\n관련 에러 예방법}\",\n  \"test_steps\": [\"{구체적 테스트 단계1}\", \"{단계2}\", \"{단계3}\"],\n  \"risk_level\": \"LOW 또는 MEDIUM 또는 HIGH\"\n}\n\nJSON만 출력하세요. 다른 텍스트 없이 JSON만.`;\n\nconst ollamaBody = JSON.stringify({\n  model: \"deepseek-coder-v2:16b\",\n  prompt: prompt,\n  stream: false,\n  format: \"json\",\n  temperature: 0.1,\n  top_p: 0.9,\n});\n\nreturn [\n  {\n    json: {\n      ...prevData,\n      source_code: sourceCode,\n      file_sha: githubResponse.sha,\n      ollama_body: ollamaBody,\n    },\n  },\n];\n"
+      },
+      "id": "decode-source",
+      "name": "Decode & Prepare Ollama",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.ollama_body }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "call-ollama",
+      "name": "Ollama Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Ollama 응답을 받아 분석 결과를 준비하는 n8n Function 노드\n *\n * - Ollama의 응답이 JSON 형식이라고 가정하고 파싱 시도\n * - 분석 결과에서 브랜치명, 커밋 메시지, PR 제목/본문을 추출\n * - fix_code가 불완전할 경우 원본 코드 유지\n * - GitHub API 요청에 사용할 JSON body 미리 생성\n */\nconst ollamaResponse = $input.first().json;\nconst prevData = $(\"Decode & Prepare Ollama\").first().json;\n\n/**\n * Ollama 응답을 JSON으로 파싱 시도\n *\n * - 파싱 실패 시 분석 결과에 실패 원인과 함께 원본 코드 유지\n */\nlet analysis;\ntry {\n  analysis = JSON.parse(ollamaResponse.response);\n} catch (e) {\n  analysis = {\n    summary: \"Ollama 응답 파싱 실패\",\n    possible_causes: [ollamaResponse.response?.substring(0, 200) || \"unknown\"],\n    fix_strategy: \"원본 코드를 유지합니다\",\n    fix_code: prevData.source_code,\n    commit_msg: \"fix: auto-fix attempt for \" + prevData.message,\n    pr_title: \"Auto-fix: \" + prevData.message,\n    pr_body: \"Sentry 에러 자동 수정 시도 (Ollama 응답 파싱 실패)\",\n    test_steps: [],\n    risk_level: \"LOW\",\n  };\n}\n\n/**\n * 브랜치명, 커밋 메시지, PR 제목/본문을 분석 결과에서 가져옴\n *\n * - 브랜치명은 고유해야 하므로 event_id 앞 8자리 사용\n * - 커밋 메시지, PR 제목/본문은 분석 결과에 없으면 기본값 사용\n */\nconst branchName = \"fix/sentry-\" + prevData.event_id.substring(0, 8);\nconst commitMsg = analysis.commit_msg || \"fix: auto-fix from sentry\";\nconst prTitle = analysis.pr_title || \"Auto-fix: \" + prevData.message;\nconst prBody = analysis.pr_body || \"Sentry 에러 자동 수정\";\n\n// fix_code에서 마크다운 코드블록 제거\nlet fixCode = analysis.fix_code || prevData.source_code;\nfixCode = fixCode\n  .replace(/^```[a-zA-Z]*\\n?/, \"\")\n  .replace(/\\n?```$/, \"\")\n  .trim();\n\n/**\n * fix_code가 불완전하면 원본 유지 (안전장치)\n *\n * - 원본 대비 fix_code의 라인 수가 50% 미만이거나\n * - fix_code에 import 구문이 없는데 원본에는 import 구문이 있는 경우\n */\nconst originalLines = prevData.source_code.split(\"\\n\").length;\nconst fixLines = fixCode.split(\"\\n\").length;\nconst isIncomplete = fixLines < originalLines * 0.5;\nconst isMissingImport = !fixCode.includes(\"import\") && prevData.source_code.includes(\"import\");\n\nif (isIncomplete || isMissingImport) {\n  fixCode = prevData.source_code;\n  analysis.summary = (analysis.summary || \"\") + \" (fix_code가 불완전하여 원본 유지)\";\n}\n\n// HTTP Request 노드용 JSON body 미리 생성\nconst updateFileBody = JSON.stringify({\n  message: commitMsg,\n  content: Buffer.from(fixCode).toString(\"base64\"),\n  sha: prevData.file_sha,\n  branch: branchName,\n});\n\n// PR 생성용 JSON body 미리 생성\nconst causesText = Array.isArray(analysis.possible_causes)\n  ? analysis.possible_causes.map((c, i) => `${i + 1}. ${c}`).join(\"\\n\")\n  : \"\";\n\nconst createPrBody = JSON.stringify({\n  title: prTitle,\n  body:\n    \"## n8n / Sentry Auto-Fix\\n\\n\" +\n    \"**Event ID**: \" + prevData.event_id + \"\\n\\n\" +\n    \"**Risk Level**: \" + (analysis.risk_level || \"unknown\") + \"\\n\\n\" +\n    \"---\\n\\n\" +\n    \"### Summary\\n\\n\" +\n    (analysis.summary || \"\") + \"\\n\\n\" +\n    \"---\\n\\n\" +\n    \"### Possible Causes\\n\\n\" +\n    causesText + \"\\n\\n\" +\n    \"---\\n\\n\" +\n    \"### Fix Strategy\\n\\n\" +\n    (analysis.fix_strategy || \"\") + \"\\n\\n\" +\n    \"---\\n\\n\" +\n    prBody + \"\\n\\n\" +\n    \"---\\n\\n\" +\n    \"_Generated by n8n + Ollama_\",\n  head: branchName,\n  base: \"main\",\n  draft: true,\n});\n\n// 최종적으로 Function 노드에서 다음 노드로 전달할 데이터\nconst respondBody = JSON.stringify({\n  success: true,\n  branch: branchName,\n  summary: analysis.summary || \"\",\n});\n\nreturn [\n  {\n    json: {\n      event_id: prevData.event_id,\n      filename: prevData.filename,\n      file_sha: prevData.file_sha,\n      branch: branchName,\n      summary: analysis.summary,\n      possible_causes: analysis.possible_causes,\n      fix_strategy: analysis.fix_strategy,\n      fix_code: analysis.fix_code,\n      commit_msg: commitMsg,\n      pr_title: prTitle,\n      pr_body: prBody,\n      test_steps: analysis.test_steps,\n      risk_level: analysis.risk_level,\n      update_file_body: updateFileBody,\n      create_pr_body: createPrBody,\n      respond_body: respondBody,\n    },\n  },\n];\n"
+      },
+      "id": "parse-ollama",
+      "name": "Parse Ollama Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/KimDongGyun23/n8n-test/git/ref/heads/main",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-main-ref",
+      "name": "Get Main Branch SHA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/KimDongGyun23/n8n-test/git/refs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"ref\": \"refs/heads/{{ $('Parse Ollama Response').first().json.branch }}\",\n  \"sha\": \"{{ $json.object.sha }}\"\n}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "create-branch",
+      "name": "Create Branch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1780,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/contents/{{ $('Parse Ollama Response').first().json.filename }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $('Parse Ollama Response').first().json.update_file_body }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "update-file",
+      "name": "Update File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/KimDongGyun23/n8n-test/pulls",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $('Parse Ollama Response').first().json.create_pr_body }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "create-pr",
+      "name": "Create Draft PR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $('Parse Ollama Response').first().json.respond_body }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2440,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Sentry Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Sentry Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Sentry Payload": {
+      "main": [
+        [
+          {
+            "node": "Get Source from GitHub",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Source from GitHub": {
+      "main": [
+        [
+          {
+            "node": "Decode & Prepare Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decode & Prepare Ollama": {
+      "main": [
+        [
+          {
+            "node": "Ollama Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Analysis": {
+      "main": [
+        [
+          {
+            "node": "Parse Ollama Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Ollama Response": {
+      "main": [
+        [
+          {
+            "node": "Get Main Branch SHA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Main Branch SHA": {
+      "main": [
+        [
+          {
+            "node": "Create Branch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Branch": {
+      "main": [
+        [
+          {
+            "node": "Update File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update File": {
+      "main": [
+        [
+          {
+            "node": "Create Draft PR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Draft PR": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
