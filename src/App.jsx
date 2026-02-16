@@ -1,3 +1,4 @@
+```javascript
 import { captureException } from "@sentry/react";
 import { useState, useCallback } from "react";
 import "./App.css";
@@ -23,11 +24,13 @@ function App() {
     }
   }, []);
 
-  // 에러 2: Null 객체 접근
+  // 수정된 에러 2: Null 객체 접근
   const triggerNullError = useCallback(() => {
     try {
       const data = null;
-      setItems(data.items); // Sentry #2
+      if (data !== null && data.items) { // null check를 추가합니다.
+        setItems(data.items);
+      }
     } catch (error) {
       captureException(error);
       setErrorHistory((prev) => [...prev, "null-error"]);
@@ -38,7 +41,9 @@ function App() {
   const triggerMapError = useCallback(() => {
     try {
       const invalid = "string";
-      invalid.map((item) => item.name); // Sentry #3
+      if (Array.isArray(invalid)) { // Array check를 추가합니다.
+        invalid.map((item) => item.name);
+      }
     } catch (error) {
       captureException(error);
       setErrorHistory((prev) => [...prev, "map-error"]);
@@ -54,9 +59,7 @@ function App() {
         <section className="counter-section">
           <h2>정상 동작</h2>
           <div className="counter-display">{count}</div>
-          <button className="btn btn-success" onClick={increment}>
-            카운트 +1
-          </button>
+          <button className="btn btn-success" onClick={increment}>카운트 +1</button>
         </section>
 
         {/* 에러 히스토리 */}
@@ -80,18 +83,15 @@ function App() {
           <h2>에러 재현</h2>
 
           <div className="error-grid">
-            <button className="btn btn-danger" onClick={triggerCallbackError}>
-              Callback 오류
+            <button className="btn btn-danger" onClick={triggerCallbackError}>Callback 오류
               <small>undefined 함수</small>
             </button>
 
-            <button className="btn btn-warning" onClick={triggerNullError}>
-              Null 참조
+            <button className="btn btn-warning" onClick={triggerNullError}>Null 참조
               <small>data.items</small>
             </button>
 
-            <button className="btn btn-danger" onClick={triggerMapError}>
-              Map 오류
+            <button className="btn btn-danger" onClick={triggerMapError}>Map 오류
               <small>string.map()</small>
             </button>
           </div>
@@ -100,5 +100,5 @@ function App() {
     </div>
   );
 }
-
 export default App;
+```
