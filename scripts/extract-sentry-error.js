@@ -35,7 +35,23 @@ const inner = innerMatch ? innerMatch[1] : culprit;
 
 // 파일 경로 형태로 변경 (src/... 또는 /src/...)
 const isSafePath = /^\/?src[\/\\][\w./-]+$/.test(inner);
-const filePath = isSafePath ? inner.replace(/\\/g, "/") : null;
+let filePath = isSafePath ? inner.replace(/\\/g, "/") : null;
+
+/**
+ * 확장자 자동 추가: 대문자로 시작하면 .jsx, 아니면 .js
+ * 유료 버전의 한계로 인해, 컴포넌트는 대문자로 시작하는 경우가 많으므로 이를 기준으로 확장자 결정
+ * 예: src/ErrorButton → src/ErrorButton.jsx, src/utils/helper → src/utils/helper.js
+ */
+if (filePath) {
+  // 마지막 세그먼트 추출
+  const segments = filePath.split("/");
+  const last = segments[segments.length - 1] || "";
+  const firstChar = last.charAt(0);
+
+  // 마지막 이름이 대문자로 시작하면 컴포넌트로 보고 .jsx, 아니면 .js
+  if (firstChar >= "A" && firstChar <= "Z") filePath = `${filePath}.jsx`;
+  else filePath = `${filePath}.js`;
+}
 
 const errorInfo = {
   issueId: id,
