@@ -1,3 +1,4 @@
+```javascript
 import { captureException } from "@sentry/react";
 import { useState, useCallback } from "react";
 import "./App.css";
@@ -12,33 +13,35 @@ function App() {
     setCount((c) => c + 1);
   }, []);
 
-  // 에러 1: Callback 함수 없음
+  // 에러 수정: Callback 함수 없음
   const triggerCallbackError = useCallback(() => {
     try {
       const callback = undefined;
-      callback(); // Sentry #1
+      if (callback) callback(); // Sentry #1
     } catch (error) {
       captureException(error);
       setErrorHistory((prev) => [...prev, "callback-error"]);
     }
   }, []);
 
-  // 에러 2: Null 객체 접근
+  // 에러 수정: Null 객체 접근
   const triggerNullError = useCallback(() => {
     try {
       const data = null;
-      setItems(data.items); // Sentry #2
+      if (data && data.items) setItems(data.items); // Sentry #2
     } catch (error) {
       captureException(error);
       setErrorHistory((prev) => [...prev, "null-error"]);
     }
   }, []);
 
-  // 에러 3: 배열 아닌 값에 map()
+  // 에러 수정: 배열 아닌 값에 map()
   const triggerMapError = useCallback(() => {
     try {
       const invalid = "string";
-      invalid.map((item) => item.name); // Sentry #3
+      if (typeof invalid === 'object' && invalid !== null) {
+        invalid.map((item) => item.name);
+      }
     } catch (error) {
       captureException(error);
       setErrorHistory((prev) => [...prev, "map-error"]);
@@ -54,9 +57,7 @@ function App() {
         <section className="counter-section">
           <h2>정상 동작</h2>
           <div className="counter-display">{count}</div>
-          <button className="btn btn-success" onClick={increment}>
-            카운트 +1
-          </button>
+          <button className="btn btn-success" onClick={increment}>카운트 +1</button>
         </section>
 
         {/* 에러 히스토리 */}
@@ -102,3 +103,4 @@ function App() {
 }
 
 export default App;
+```
