@@ -1,0 +1,15 @@
+{
+  "name": "Sentry Error PR Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sentry-error-pr-bot"
+      },
+      "name": "Sentry Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [250, 350]
+    }
+  ],
+  "connections": {}
+}

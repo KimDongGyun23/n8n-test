@@ -9,8 +9,7 @@ services:
       # 필수 환경변수
       - N8N_HOST=localhost
       - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - WEBHOOK_URL=http://localhost:5678/
+      - N8N_PROTOCOL=https
       - N8N_NODE_ENV=development
 
       # Sentry 연동용 환경변수
@@ -21,6 +20,14 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - n8n_data:/home/node/.n8n
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-tunnel
+    restart: unless-stopped
+    command: tunnel --url http://n8n:5678 --no-autoupdate
+    depends_on:
+      - n8n
 
 volumes:
   n8n_data:

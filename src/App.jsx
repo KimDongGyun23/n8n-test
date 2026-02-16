@@ -26,7 +26,7 @@ function App() {
         const participants = data?.participants?.map((p) => p.userId); // ❌ data.participants undefined
         setRoomData((prev) => ({ ...prev, participants }));
       } catch (error) {
-        captureException(error);
+        captureException(error, { fingerprint: ["room-update-parse"] });
         setErrorHistory((prev) => [...prev, "room-update-parse"]);
       }
     });
@@ -42,7 +42,7 @@ function App() {
             }, {});
           console.log("Poll stats:", stats);
         } catch (error) {
-          captureException(error);
+          captureException(error, { fingerprint: ["poll-response-reduce"] });
           setErrorHistory((prev) => [...prev, "poll-response-reduce"]);
         }
       });
@@ -55,7 +55,7 @@ function App() {
             tracks[0].enabled = command.enabled; // ❌ tracks[0] undefined
           }
         } catch (error) {
-          captureException(error);
+          captureException(error, { fingerprint: ["remote-control-stream"] });
           setErrorHistory((prev) => [...prev, "remote-control-stream"]);
         }
       });
@@ -94,7 +94,7 @@ function App() {
       });
       setRoomData(response.data);
     } catch (error) {
-      captureException(error);
+      captureException(error, { fingerprint: ["api-fetch"] });
       setErrorHistory((prev) => [...prev, "api-fetch"]);
       errorCountRef.current += 1;
       if (errorCountRef.current > 3) {
@@ -159,11 +159,10 @@ function App() {
         <button
           className="btn-simulate"
           onClick={() => {
-            setActiveDialog("simulate-error");
-            setIsConnected(false); // 연결 끊김 시뮬
+            captureException(new Error("강제 에러 발생"), { fingerprint: ["simulated-error"] });
           }}
         >
-          연결 끊기 + 에러 트리거
+          에러 발생시키기
         </button>
         <button
           className="btn-role"
