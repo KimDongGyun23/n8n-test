@@ -1,10 +1,11 @@
+```javascript
 import { captureException } from "@sentry/react";
 import { useState, useCallback } from "react";
 import "./App.css";
 
 function App() {
   const [count, setCount] = useState(0);
-  const [_, setItems] = useState([]);
+  const [items, setItems] = useState([]);
   const [errorHistory, setErrorHistory] = useState([]);
 
   // 정상 카운터
@@ -27,7 +28,11 @@ function App() {
   const triggerNullError = useCallback(() => {
     try {
       const data = null;
-      setItems(data.items); // Sentry #2
+      if (data && data.items) {
+        setItems(data.items); // Sentry #2
+      } else {
+        console.error('Data is null or does not have items property');
+      }
     } catch (error) {
       captureException(error);
       setErrorHistory((prev) => [...prev, "null-error"]);
@@ -38,7 +43,11 @@ function App() {
   const triggerMapError = useCallback(() => {
     try {
       const invalid = "string";
-      invalid.map((item) => item.name); // Sentry #3
+      if (typeof invalid === 'object' && invalid.map) {
+        invalid.map((item) => item.name);
+      } else {
+        console.error('Invalid value is not an object or does not have map method');
+      }
     } catch (error) {
       captureException(error);
       setErrorHistory((prev) => [...prev, "map-error"]);
@@ -48,17 +57,15 @@ function App() {
   return (
     <div>
       <h1 className="header">Sentry 에러 테스트</h1>
-
+      
       <main className="main">
         {/* 정상 카운터 */}
         <section className="counter-section">
           <h2>정상 동작</h2>
           <div className="counter-display">{count}</div>
-          <button className="btn btn-success" onClick={increment}>
-            카운트 +1
-          </button>
+          <button className="btn btn-success" onClick={increment}>카운트 +1</button>
         </section>
-
+        
         {/* 에러 히스토리 */}
         <section className="history-section">
           <h2>에러 기록 ({errorHistory.length})</h2>
@@ -70,35 +77,26 @@ function App() {
                 <div key={i} className="history-item error">
                   • {error.replace("-", " ")}
                 </div>
-              ))
-            )}
+              )))
+            }
           </div>
         </section>
-
+        
         {/* 에러 버튼들 */}
         <section className="error-buttons">
           <h2>에러 재현</h2>
-
+          
           <div className="error-grid">
-            <button className="btn btn-danger" onClick={triggerCallbackError}>
-              Callback 오류
-              <small>undefined 함수</small>
-            </button>
-
-            <button className="btn btn-warning" onClick={triggerNullError}>
-              Null 참조
-              <small>data.items</small>
-            </button>
-
-            <button className="btn btn-danger" onClick={triggerMapError}>
-              Map 오류
-              <small>string.map()</small>
-            </button>
+            <button className="btn btn-danger" onClick={triggerCallbackError}>Callback 오류<small>undefined 함수</small></button>
+            
+            <button className="btn btn-warning" onClick={triggerNullError}>Null 참조<small>data.items</small></button>
+            
+            <button className="btn btn-danger" onClick={triggerMapError}>Map 오류<small>string.map()</small></button>
           </div>
         </section>
       </main>
     </div>
   );
 }
-
 export default App;
+```
