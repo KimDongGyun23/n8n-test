@@ -9,8 +9,10 @@ services:
       # 필수 환경변수
       - N8N_HOST=localhost
       - N8N_PORT=5678
-      - N8N_PROTOCOL=https
+      - N8N_PROTOCOL=http
       - N8N_NODE_ENV=development
+      # Webhook URL은 cloudflared 터널 URL로 설정
+      - WEBHOOK_URL=${WEBHOOK_URL}
 
       # Sentry 연동용 환경변수
       - SENTRY_DSN=${VITE_SENTRY_DSN}
