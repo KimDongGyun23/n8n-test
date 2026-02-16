@@ -8,8 +8,36 @@
       },
       "name": "Sentry Webhook",
       "type": "n8n-nodes-base.webhook",
-      "position": [250, 350]
+      "typeVersion": 2,
+      "position": [
+        250,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\r\n * Sentry Webhook에서 에러 정보를 추출하는 스크립트\r\n *\r\n * n8n 워크플로우의 Code 노드에서 사용\r\n * 입력: Sentry Webhook의 JSON 페이로드\r\n * 출력: 에러 핵심 정보가 담긴 JSON 객체\r\n *\r\n * 주요 정보:\r\n * - issueId: Sentry 이슈 ID\r\n * - title: 이슈 제목\r\n * - level: 에러 심각도\r\n * - priority: Sentry에서 설정한 우선순위\r\n * - message: 에러 메시지\r\n * - errorType: 에러 유형 (예: TypeError)\r\n * - filename: 에러가 발생한 파일명\r\n * - functionName: 에러가 발생한 함수명\r\n */\r\nconst item = $input.first();\r\nconsole.log(\"Received input:\", JSON.stringify(item, null, 2));\r\n// return [{ json: { body: $input.first().json.body } }];\r\n\r\nif (!item || !item.json) {\r\n  throw new Error(\"Invalid input: missing json\");\r\n}\r\n\r\n// Sentry Webhook 기본 구조에 맞춰 파싱\r\nconst root = item.json;\r\nconst body = root.body ?? {};\r\nconst data = body.data ?? {};\r\nconst { id, title, level, metadata, priority, culprit } = data?.issue || {};\r\n\r\n// 괄호 안 내용만 추출: ?(src/ErrorButton) -> src/ErrorButton\r\nconst innerMatch = culprit.match(/\\(([^()]+)\\)/);\r\nconst inner = innerMatch ? innerMatch[1] : culprit;\r\n\r\n// 파일 경로 형태로 변경 (src/... 또는 /src/...)\r\nconst isSafePath = /^\\/?src[\\/\\\\][\\w./-]+$/.test(inner);\r\nconst filePath = isSafePath ? inner.replace(/\\\\/g, \"/\") : null;\r\n\r\nconst errorInfo = {\r\n  issueId: id,\r\n  title,\r\n  level,\r\n  priority,\r\n  message: metadata?.value || \"\",\r\n  errorType: metadata?.type || \"error\",\r\n  path: filePath,\r\n  functionName: metadata?.function || \"\",\r\n};\r\n\r\n// 다음 노드로 전달\r\nreturn [{ json: errorInfo }];"
+      },
+      "name": "Extract Sentry Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        450,
+        350
+      ]
     }
   ],
-  "connections": {}
+  "connections": {
+    "Sentry Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Sentry Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
 }
