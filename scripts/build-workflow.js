@@ -35,6 +35,7 @@ const NODE_SCRIPT_MAP = {
   "Extract Sentry Error": "extract-sentry-error.js",
   "Build Ollama Prompt": "build-ollama-prompt.js",
   "Analyze with Ollama": "analyze-ollama-response.js",
+  "Prepare GitHub PR": "prepare-github-pr.js",
 };
 
 // 매핑 기반 교체
