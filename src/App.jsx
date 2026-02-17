@@ -1,6 +1,6 @@
 import { captureException } from "@sentry/react";
 import { ErrorButton } from "./ErrorButton";
-import { useCallback } from "react";
+import React, { useCallback } from "react";
 import "./App.css";
 
 function App() {
