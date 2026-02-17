@@ -33,6 +33,8 @@ const workflow = JSON.parse(readFileSync(WORKFLOW_PATH, "utf-8"));
 // 노드 이름과 스크립트 파일명 매핑
 const NODE_SCRIPT_MAP = {
   "Extract Sentry Error": "extract-sentry-error.js",
+  "Build Ollama Prompt": "build-ollama-prompt.js",
+  "Analyze with Ollama": "analyze-ollama-response.js",
 };
 
 // 매핑 기반 교체
