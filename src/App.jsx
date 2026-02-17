@@ -1,3 +1,4 @@
+```javascript
 import { captureException } from "@sentry/react";
 import { ErrorButton } from "./ErrorButton";
 import { useCallback } from "react";
@@ -22,5 +23,5 @@ function App() {
     </div>
   );
 }
-
 export default App;
+```
