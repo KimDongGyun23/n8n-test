@@ -1,189 +1,68 @@
 import { captureException } from "@sentry/react";
-import { useState, useCallback, useEffect, useRef } from "react";
-import "./App.css";
+import { useCallback, useEffect, useState } from "react";
 
 function App() {
-  const [roomId] = useState("room-12345-abcde"); // 실제 프로젝트에서 URL param처럼
-  const [roomData, setRoomData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [errorHistory, setErrorHistory] = useState([]);
-  const errorCountRef = useRef(0);
-  const socketRef = useRef(null);
-  const roleRef = useRef("audience"); // 실제 zustand 역할 대체
+  const [post, setPost] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-  // 가상 socket 상태 (실제 Socket.IO 상태 대체)
-  const [isConnected, setIsConnected] = useState(false);
-  const [activeDialog, setActiveDialog] = useState(null);
+  /**
+   * fetchPost: JSONPlaceholder API에서 포스트 데이터를 가져오는 함수
+   * - postId: 가져올 포스트의 ID (기본값 999, 존재하지 않는 ID로 에러 유발)
+   * - 로딩 상태 관리, 에러 처리, Sentry 예외 캡처 포함
+   */
+  const fetchPost = useCallback(async (postId = 999) => {
+    setLoading(true);
+    setError(null);
+    try {
+      // API 호출 및 응답 검증
+      const response = await fetch(`https://jsonplaceholder.typicode.com/posts/${postId}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}: 해당 포스트를 찾을 수 없음`);
 
-  // 실제 작업 중 발생할 법한 복잡한 이벤트 핸들러
-  const setupHandlers = useCallback(() => {
-    const socket = socketRef.current;
-    if (!socket || !isConnected) return;
+      const data = await response.json();
 
-    socket.on = socket.on || ((event) => console.log(`Mock on: ${event}`));
-    socket.on("room:update", (data) => {
-      try {
-        const participants = data?.participants?.map((p) => p.userId); // ❌ data.participants undefined
-        setRoomData((prev) => ({ ...prev, participants }));
-      } catch (error) {
-        captureException(error);
-        setErrorHistory((prev) => [...prev, "room-update-parse"]);
+      // userId 필드 검증
+      if (!data.userId) {
+        const apiError = new Error("API 응답에 userId 필드가 없음");
+        apiError.name = "ValidationError";
+        captureException(apiError, {
+          tags: { source: "api-validation", endpoint: `/posts/${postId}` },
+          extra: { receivedData: data, expected: "userId present" },
+        });
+        setError("userId 필드가 없습니다.");
+        return;
       }
-    });
 
-    if (roleRef.current === "presenter") {
-      socket.on("poll:response", (responses) => {
-        try {
-          const stats = responses
-            .map((r) => r.choiceIndex ?? 0)
-            .reduce((acc, idx) => {
-              acc[idx] = (acc[idx] || 0) + 1;
-              return acc;
-            }, {});
-          console.log("Poll stats:", stats);
-        } catch (error) {
-          captureException(error);
-          setErrorHistory((prev) => [...prev, "poll-response-reduce"]);
-        }
+      setPost(data);
+    } catch (err) {
+      captureException(err, {
+        fingerprint: ["api-fetch-error"],
+        tags: { source: "jsonplaceholder" },
+        extra: { postId, attemptedUrl: `posts/${postId}` },
       });
-    } else {
-      socket.on("interaction:remote-control", (command) => {
-        try {
-          const { streamId } = command;
-          if (streamId) {
-            const tracks = []; // 빈 배열 시뮬 (WebRTC getVideoTracks())
-            tracks[0].enabled = command.enabled; // ❌ tracks[0] undefined
-          }
-        } catch (error) {
-          captureException(error);
-          setErrorHistory((prev) => [...prev, "remote-control-stream"]);
-        }
-      });
-    }
-  }, [isConnected]);
-
-  const cleanupHandlers = useCallback(() => {
-    const socket = socketRef.current;
-    if (socket) {
-      socket.removeAllListeners = socket.removeAllListeners || (() => console.log("Mock cleanup"));
-      socket.removeAllListeners();
+      setError(err.message);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    socketRef.current = { on: () => {}, removeAllListeners: () => {} }; // mock socket
-    setupHandlers();
-    return cleanupHandlers;
-  }, [setupHandlers, cleanupHandlers]);
-
-  const loadRoomData = useCallback(async () => {
-    if (!roomId.match(/^[a-z0-9-]{10,}$/)) {
-      throw new Error("Invalid room ID");
-    }
-    setLoading(true);
-    try {
-      // mock API (실제 fetchRoomData 대체)
-      const response = await new Promise((resolve, reject) => {
-        setTimeout(() => {
-          if (Math.random() < 0.3) reject(new Error("Network timeout"));
-          else
-            resolve({
-              data: { id: roomId, participants: [], polls: [{ id: "1", question: "테스트 폴" }] },
-            });
-        }, 1000);
-      });
-      setRoomData(response.data);
-    } catch (error) {
-      captureException(error);
-      setErrorHistory((prev) => [...prev, "api-fetch"]);
-      errorCountRef.current += 1;
-      if (errorCountRef.current > 3) {
-        setActiveDialog("retry-limit");
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [roomId]);
-
-  // 다이얼로그 useEffect
-  useEffect(() => {
-    if (activeDialog === "poll-results" && roomData?.polls?.length) {
-      const currentPolls = roomData.polls.filter((p) => p.active); // roomData stale 가능
-      console.log("Active polls:", currentPolls);
-    }
-  }, [activeDialog, roomData?.polls]);
-
-  useEffect(() => {
-    loadRoomData();
-  }, [loadRoomData]);
-
-  if (loading) {
-    return <div className="loading">방 로딩 중...</div>;
-  }
+    fetchPost();
+  }, [fetchPost]);
 
   return (
-    <div className="room-dashboard">
-      <header className="room-header">
-        <h1>방 ID: {roomId}</h1>
+    <div className="app">
+      <h1>JSONPlaceholder + Sentry 테스트</h1>
+      <button onClick={() => fetchPost(1)}>정상 post#1 불러오기</button>
+      <button onClick={() => fetchPost(999)}>에러 post#999 (없음)</button>
+
+      {loading && <p>로딩 중...</p>}
+      {error && <p style={{ color: "red" }}>에러: {error}</p>}
+      {post && (
         <div>
-          참여자: {roomData?.participants?.length || 0}명 | 연결: {isConnected ? "O" : "X"}
+          <h3>{post.title}</h3>
+          <p>User ID: {post.userId}</p>
         </div>
-        <div>역할: {roleRef.current}</div>
-      </header>
-
-      <section className="error-section">
-        <h2>에러 히스토리 ({errorHistory.length})</h2>
-        <div className="error-list">
-          {errorHistory.length === 0 ? (
-            <div className="empty-state">에러 발생 대기 중...</div>
-          ) : (
-            errorHistory.map((err, i) => (
-              <div key={i} className="error-item">
-                •{" "}
-                {err
-                  .replace("-", " ")
-                  .replace("room", "방")
-                  .replace("poll", "폴")
-                  .replace("api", "API")
-                  .replace("control", "원격제어")}
-              </div>
-            ))
-          )}
-        </div>
-      </section>
-
-      <section className="controls">
-        <button className="btn-reload" onClick={loadRoomData}>
-          방 데이터 새로고침 (30% 실패)
-        </button>
-        <button
-          className="btn-simulate"
-          onClick={() => {
-            setActiveDialog("simulate-error");
-            setIsConnected(false); // 연결 끊김 시뮬
-          }}
-        >
-          연결 끊기 + 에러 트리거
-        </button>
-        <button
-          className="btn-role"
-          onClick={() =>
-            (roleRef.current = roleRef.current === "presenter" ? "audience" : "presenter")
-          }
-        >
-          역할 변경: {roleRef.current}
-        </button>
-      </section>
-
-      {roomData?.polls && (
-        <section className="polls">
-          <h2>폴 목록 ({roomData.polls.length})</h2>
-          <ul>
-            {roomData.polls.map((poll) => (
-              <li key={poll.id}>{poll.question}</li>
-            ))}
-          </ul>
-        </section>
       )}
     </div>
   );

@@ -1,0 +1,331 @@
+{
+  "name": "Sentry Error PR Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sentry-error-pr-bot"
+      },
+      "name": "Sentry Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\r\n * Sentry Webhook에서 에러 정보를 추출하는 스크립트\r\n *\r\n * n8n 워크플로우의 Code 노드에서 사용\r\n * 입력: Sentry Webhook의 JSON 페이로드\r\n * 출력: 에러 핵심 정보가 담긴 JSON 객체\r\n *\r\n * 주요 정보:\r\n * - issueId: Sentry 이슈 ID\r\n * - title: 이슈 제목\r\n * - level: 에러 심각도\r\n * - priority: Sentry에서 설정한 우선순위\r\n * - message: 에러 메시지\r\n * - errorType: 에러 유형 (예: TypeError)\r\n * - filename: 에러가 발생한 파일명\r\n * - functionName: 에러가 발생한 함수명\r\n */\r\nconst item = $input.first();\r\nconsole.log(\"Received input:\", JSON.stringify(item, null, 2));\r\n// return [{ json: { body: $input.first().json.body } }];\r\n\r\nif (!item || !item.json) {\r\n  throw new Error(\"Invalid input: missing json\");\r\n}\r\n\r\n// Sentry Webhook 기본 구조에 맞춰 파싱\r\nconst root = item.json;\r\nconst body = root.body ?? {};\r\nconst data = body.data ?? {};\r\nconst { id, title, level, metadata, priority, culprit } = data?.issue || {};\r\n\r\n// 괄호 안 내용만 추출: ?(src/ErrorButton) -> src/ErrorButton\r\nconst innerMatch = culprit.match(/\\(([^()]+)\\)/);\r\nconst inner = innerMatch ? innerMatch[1] : culprit;\r\n\r\n// 파일 경로 형태로 변경 (src/... 또는 /src/...)\r\nconst isSafePath = /^\\/?src[\\/\\\\][\\w./-]+$/.test(inner);\r\nlet filePath = isSafePath ? inner.replace(/\\\\/g, \"/\") : null;\r\n\r\n/**\r\n * 확장자 자동 추가: 대문자로 시작하면 .jsx, 아니면 .js\r\n * 유료 버전의 한계로 인해, 컴포넌트는 대문자로 시작하는 경우가 많으므로 이를 기준으로 확장자 결정\r\n * 예: src/ErrorButton → src/ErrorButton.jsx, src/utils/helper → src/utils/helper.js\r\n */\r\nif (filePath) {\r\n  // 마지막 세그먼트 추출\r\n  const segments = filePath.split(\"/\");\r\n  const last = segments[segments.length - 1] || \"\";\r\n  const firstChar = last.charAt(0);\r\n\r\n  // 마지막 이름이 대문자로 시작하면 컴포넌트로 보고 .jsx, 아니면 .js\r\n  if (firstChar >= \"A\" && firstChar <= \"Z\") filePath = `${filePath}.jsx`;\r\n  else filePath = `${filePath}.js`;\r\n}\r\n\r\nconst errorInfo = {\r\n  issueId: id,\r\n  title,\r\n  level,\r\n  priority,\r\n  message: metadata?.value || \"\",\r\n  errorType: metadata?.type || \"error\",\r\n  path: filePath,\r\n  functionName: metadata?.function || \"\",\r\n};\r\n\r\n// 다음 노드로 전달\r\nreturn [{ json: errorInfo }];"
+      },
+      "name": "Extract Sentry Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/contents/{{ $json.path }}?ref=dev",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Fetch Source From GitHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        750,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\r\n * Sentry 에러 정보 + GitHub 소스 코드를 조합하여\r\n * Ollama 분석 요청 프롬프트를 생성하는 n8n Code 노드\r\n *\r\n * 입력:\r\n * - \"Extract Sentry Error\" 노드: errorInfo (issueId, title, message, errorType, path, functionName, level, priority)\r\n * - 이전 노드 (GitHub API, Accept: v3+json): { content, encoding, sha, path, ... }\r\n *\r\n * 출력:\r\n *   - errorInfo 필드 + source_code, file_sha, ollama_body\r\n */\r\nconst githubFile = $input.first().json;\r\nconst errorInfo = $(\"Extract Sentry Error\").first().json;\r\n\r\n// GitHub Contents API (v3+json) 응답에서 소스 코드 & SHA 추출\r\nlet sourceCode = \"// 소스 코드를 가져올 수 없음\";\r\nlet fileSha = githubFile.sha ?? \"unknown\";\r\n\r\nif (githubFile.encoding === \"base64\" && typeof githubFile.content === \"string\") {\r\n  try {\r\n    sourceCode = Buffer.from(githubFile.content, \"base64\").toString(\"utf-8\");\r\n  } catch {\r\n    sourceCode = \"// base64 디코딩 실패\";\r\n  }\r\n} else if (typeof githubFile.content === \"string\") {\r\n  sourceCode = githubFile.content;\r\n}\r\n\r\n// Ollama 프롬프트 생성\r\nconst prompt = `당신은 시니어 프론트엔드 개발자입니다. 아래 에러를 분석하고 수정 코드를 JSON으로 응답하세요.\r\n\r\n## 에러 정보\r\n- 제목: ${errorInfo.title}\r\n- 에러 타입: ${errorInfo.errorType}\r\n- 메시지: ${errorInfo.message}\r\n- 파일: ${errorInfo.path}\r\n- 함수: ${errorInfo.functionName || \"알 수 없음\"}\r\n- 심각도: ${errorInfo.level} / 우선순위: ${errorInfo.priority}\r\n\r\n## 원본 소스 코드 (${errorInfo.path})\r\n\\`\\`\\`\r\n${sourceCode}\r\n\\`\\`\\`\r\n\r\n## 요구사항\r\n1. 에러 원인을 정확히 분석하세요.\r\n2. fix_code에는 import부터 export까지 **전체 파일** 수정본을 포함하세요.\r\n3. 수정이 필요한 부분만 변경하고, 나머지는 원본과 동일하게 유지하세요.\r\n4. PR 본문은 동료 개발자가 이해하기 쉽게 작성하세요.\r\n\r\n## 응답 형식 (JSON만 출력)\r\n{\r\n  \"summary\": \"에러 원인 한줄 요약\",\r\n  \"problemAnalysis\": \"에러의 근본 원인과 발생 배경\",\r\n  \"fixStrategy\": \"수정 전략 2-3문장\",\r\n  \"fixContent\": \"구체적으로 어떤 부분을 어떻게 고쳤는지\",\r\n  \"fixCode\": \"import부터 export까지 전체 수정된 파일 코드\",\r\n  \"testSteps\": [\"테스트 단계1\", \"단계2\", \"단계3\"],\r\n  \"commitMsg\": \"fix: 구체적인 수정 내용 (50자 이내)\",\r\n  \"prTitle\": \"Auto-fix: 에러명과 수정 내용\",\r\n  \"riskLevel\": \"LOW | MEDIUM | HIGH\"\r\n}\r\n\r\nJSON만 출력하세요. 코드블록이나 다른 텍스트 없이 순수 JSON만 반환하세요.`;\r\n\r\nconst ollamaBody = {\r\n  model: \"deepseek-coder-v2:16b\",\r\n  prompt,\r\n  stream: false,\r\n  format: \"json\",\r\n  options: {\r\n    temperature: 0.1,\r\n    top_p: 0.9,\r\n  },\r\n};\r\n\r\nreturn [\r\n  {\r\n    json: {\r\n      ...errorInfo,\r\n      sourceCode,\r\n      fileSha,\r\n      ollamaBody,\r\n    },\r\n  },\r\n];"
+      },
+      "name": "Build Ollama Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.ollamaBody) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "name": "Call Ollama API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1250,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\r\n * Ollama API 응답을 파싱하여 분석 결과를 구조화하는 n8n Code 노드\r\n *\r\n * 입력:\r\n *   - 이전 노드 (HTTP Request → Ollama): { response, model, done, ... }\r\n *   - \"Build Ollama Prompt\" 노드: errorInfo + sourceCode, fileSha, ollamaBody\r\n *\r\n * 출력:\r\n *   - 에러 정보 + Ollama 분석 결과 (PR 생성에 필요한 모든 필드)\r\n */\r\nconst ollamaRaw = $input.first().json;\r\nconst promptData = $(\"Build Ollama Prompt\").first().json;\r\n\r\n// Ollama 응답 파싱\r\nconst REQUIRED_FIELDS = [\"summary\", \"fixCode\", \"commitMsg\", \"prTitle\", \"riskLevel\"];\r\n\r\nlet analysis;\r\n\r\ntry {\r\n  // 응답이 문자열인지 객체인지 확인 후 파싱\r\n  const raw = typeof ollamaRaw === \"string\" ? ollamaRaw : ollamaRaw.response;\r\n  // JSON 파싱 시도 (Ollama가 JSON이 아닌 텍스트를 반환할 수도 있으므로)\r\n  const parsed = typeof raw === \"string\" ? JSON.parse(raw) : raw;\r\n\r\n  // 필수 필드 검증\r\n  const missing = REQUIRED_FIELDS.filter((field) => !parsed[field]);\r\n  if (missing.length > 0) throw new Error(`필수 필드 누락: ${missing.join(\", \")}`);\r\n\r\n  analysis = {\r\n    summary: parsed.summary,\r\n    problemAnalysis: parsed.problemAnalysis ?? \"\",\r\n    fixStrategy: parsed.fixStrategy ?? \"\",\r\n    fixContent: parsed.fixContent ?? \"\",\r\n    fixCode: parsed.fixCode,\r\n    testSteps: Array.isArray(parsed.testSteps) ? parsed.testSteps : [],\r\n    commitMsg: parsed.commitMsg,\r\n    prTitle: parsed.prTitle,\r\n    riskLevel: parsed.riskLevel,\r\n  };\r\n} catch (err) {\r\n  analysis = {\r\n    summary: \"Ollama 응답 파싱 실패\",\r\n    problemAnalysis: err.message,\r\n    fixStrategy: \"\",\r\n    fixContent: \"\",\r\n    fixCode: \"\",\r\n    testSteps: [],\r\n    commitMsg: \"\",\r\n    prTitle: \"\",\r\n    riskLevel: \"HIGH\",\r\n    _parseError: true,\r\n    _rawResponse: String(ollamaRaw.response ?? \"\").slice(0, 2000),\r\n  };\r\n}\r\n\r\nreturn [\r\n  {\r\n    json: {\r\n      // 에러 메타 정보\r\n      ...promptData,\r\n\r\n      // Ollama 분석 결과\r\n      ...analysis,\r\n    },\r\n  },\r\n];"
+      },
+      "name": "Analyze with Ollama",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\r\n * Ollama 분석 결과를 GitHub Draft PR 생성에 필요한 형태로 가공하는 n8n Code 노드\r\n *\r\n * 입력:\r\n *   - 이전 노드 (Analyze with Ollama): errorInfo + Ollama 분석 결과\r\n *\r\n * 출력:\r\n *   - branchName: 자동 생성된 브랜치명\r\n *   - base64Content: fixCode를 base64 인코딩\r\n *   - prBody: 마크다운 PR 본문\r\n *   - commitMsg, prTitle, fileSha, path 등 패스스루\r\n */\r\nconst data = $input.first().json;\r\n\r\n// Ollama 파싱 실패 시 중단\r\nif (data._parseError) {\r\n  throw new Error(`Ollama 분석 실패: ${data.problemAnalysis}`);\r\n}\r\n\r\nif (!data.fixCode || !data.commitMsg || !data.prTitle) {\r\n  throw new Error(\"PR 생성에 필요한 필드 누락 (fixCode, commitMsg, prTitle)\");\r\n}\r\n\r\n// 브랜치명 생성\r\nconst timeStamp = Date.now();\r\nconst branchName = `auto-fix/sentry-${data.issueId}-${timeStamp}`;\r\n\r\n// fixCode에서 마크다운 코드펜스 제거\r\nconst cleanCode = data.fixCode.replace(/^```[\\w]*\\n?/, \"\").replace(/\\n?```$/, \"\");\r\n\r\n// fixCode를 base64 인코딩 (GitHub Contents API 요구사항)\r\nconst base64Content = Buffer.from(cleanCode, \"utf-8\").toString(\"base64\");\r\n\r\n// PR 본문 마크다운 생성\r\nconst testStepsStr = Array.isArray(data.testSteps)\r\n  ? data.testSteps.map((step) => `- [ ] ${step}`).join(\"\\n\")\r\n  : \"- [ ] 수동 테스트 필요\";\r\n\r\nconst prBody = `## Sentry Issue #${data.issueId}\r\n\r\n> ${data.title}\r\n\r\n### 요약\r\n${data.summary}\r\n\r\n### 위험도\r\n**${data.riskLevel}**\r\n\r\n---\r\n\r\n### 원인 분석\r\n${data.problemAnalysis}\r\n\r\n### 수정 전략\r\n${data.fixStrategy}\r\n\r\n---\r\n\r\n### 수정 파일\r\n\\`${data.path}\\`\r\n\r\n### 변경 내용\r\n${data.fixContent}\r\n\r\n### 테스트 체크리스트\r\n${testStepsStr}\r\n\r\n---\r\n*이 PR은 Sentry Error PR Bot에 의해 자동 생성되었습니다.*`;\r\n\r\nreturn [\r\n  {\r\n    json: {\r\n      branchName,\r\n      base64Content,\r\n      prBody,\r\n      commitMsg: data.commitMsg,\r\n      prTitle: data.prTitle,\r\n      fileSha: data.fileSha,\r\n      path: data.path,\r\n      issueId: data.issueId,\r\n    },\r\n  },\r\n];"
+      },
+      "name": "Prepare GitHub PR",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1750,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/git/ref/heads/dev",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Get Dev Branch SHA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/git/refs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ref: 'refs/heads/' + $('Prepare GitHub PR').first().json.branchName, sha: $json.object.sha }) }}",
+        "options": {}
+      },
+      "name": "Create Fix Branch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2250,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/contents/{{ $('Prepare GitHub PR').first().json.path }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $('Prepare GitHub PR').first().json.commitMsg, content: $('Prepare GitHub PR').first().json.base64Content, sha: $('Prepare GitHub PR').first().json.fileSha, branch: $('Prepare GitHub PR').first().json.branchName }) }}",
+        "options": {}
+      },
+      "name": "Commit Fix",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2500,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/pulls",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ title: $('Prepare GitHub PR').first().json.prTitle, body: $('Prepare GitHub PR').first().json.prBody, head: $('Prepare GitHub PR').first().json.branchName, base: 'dev', draft: true }) }}",
+        "options": {}
+      },
+      "name": "Create Draft PR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2750,
+        350
+      ]
+    }
+  ],
+  "connections": {
+    "Sentry Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Sentry Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Sentry Error": {
+      "main": [
+        [
+          {
+            "node": "Fetch Source From GitHub",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Source From GitHub": {
+      "main": [
+        [
+          {
+            "node": "Build Ollama Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Ollama Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call Ollama API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Ollama API": {
+      "main": [
+        [
+          {
+            "node": "Analyze with Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze with Ollama": {
+      "main": [
+        [
+          {
+            "node": "Prepare GitHub PR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare GitHub PR": {
+      "main": [
+        [
+          {
+            "node": "Get Dev Branch SHA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Dev Branch SHA": {
+      "main": [
+        [
+          {
+            "node": "Create Fix Branch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Fix Branch": {
+      "main": [
+        [
+          {
+            "node": "Commit Fix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Commit Fix": {
+      "main": [
+        [
+          {
+            "node": "Create Draft PR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

@@ -24,3 +24,5 @@ dist-ssr
 *.sw?
 
 .env
+n8n_data/
+*.log
