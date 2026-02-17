@@ -1,6 +1,6 @@
+```javascript
 import { captureException } from "@sentry/react";
 import { useCallback } from "react";
-
 export const ErrorButton = () => {
   const handleClick = useCallback(() => {
     // 또 다른 테스트 에러
@@ -14,3 +14,4 @@ export const ErrorButton = () => {
 
   return <button onClick={handleClick}>에러 발생시키기</button>;
 };
+```
