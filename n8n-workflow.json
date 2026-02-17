@@ -93,6 +93,127 @@
         1500,
         350
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\r\n * Ollama 분석 결과를 GitHub Draft PR 생성에 필요한 형태로 가공하는 n8n Code 노드\r\n *\r\n * 입력:\r\n *   - 이전 노드 (Analyze with Ollama): errorInfo + Ollama 분석 결과\r\n *\r\n * 출력:\r\n *   - branchName: 자동 생성된 브랜치명\r\n *   - base64Content: fixCode를 base64 인코딩\r\n *   - prBody: 마크다운 PR 본문\r\n *   - commitMsg, prTitle, fileSha, path 등 패스스루\r\n */\r\nconst data = $input.first().json;\r\n\r\n// Ollama 파싱 실패 시 중단\r\nif (data._parseError) {\r\n  throw new Error(`Ollama 분석 실패: ${data.problemAnalysis}`);\r\n}\r\n\r\nif (!data.fixCode || !data.commitMsg || !data.prTitle) {\r\n  throw new Error(\"PR 생성에 필요한 필드 누락 (fixCode, commitMsg, prTitle)\");\r\n}\r\n\r\n// 브랜치명 생성\r\nconst timeStamp = Date.now();\r\nconst branchName = `auto-fix/sentry-${data.issueId}-${timeStamp}`;\r\n\r\n// fixCode에서 마크다운 코드펜스 제거\r\nconst cleanCode = data.fixCode.replace(/^```[\\w]*\\n?/, \"\").replace(/\\n?```$/, \"\");\r\n\r\n// fixCode를 base64 인코딩 (GitHub Contents API 요구사항)\r\nconst base64Content = Buffer.from(cleanCode, \"utf-8\").toString(\"base64\");\r\n\r\n// PR 본문 마크다운 생성\r\nconst testStepsStr = Array.isArray(data.testSteps)\r\n  ? data.testSteps.map((step) => `- [ ] ${step}`).join(\"\\n\")\r\n  : \"- [ ] 수동 테스트 필요\";\r\n\r\nconst prBody = `## Sentry Issue #${data.issueId}\r\n\r\n> ${data.title}\r\n\r\n### 요약\r\n${data.summary}\r\n\r\n### 위험도\r\n**${data.riskLevel}**\r\n\r\n---\r\n\r\n### 원인 분석\r\n${data.problemAnalysis}\r\n\r\n### 수정 전략\r\n${data.fixStrategy}\r\n\r\n---\r\n\r\n### 수정 파일\r\n\\`${data.path}\\`\r\n\r\n### 변경 내용\r\n${data.fixContent}\r\n\r\n### 테스트 체크리스트\r\n${testStepsStr}\r\n\r\n---\r\n*이 PR은 Sentry Error PR Bot에 의해 자동 생성되었습니다.*`;\r\n\r\nreturn [\r\n  {\r\n    json: {\r\n      branchName,\r\n      base64Content,\r\n      prBody,\r\n      commitMsg: data.commitMsg,\r\n      prTitle: data.prTitle,\r\n      fileSha: data.fileSha,\r\n      path: data.path,\r\n      issueId: data.issueId,\r\n    },\r\n  },\r\n];"
+      },
+      "name": "Prepare GitHub PR",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1750,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/git/ref/heads/dev",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Get Dev Branch SHA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/git/refs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ref: 'refs/heads/' + $('Prepare GitHub PR').first().json.branchName, sha: $json.object.sha }) }}",
+        "options": {}
+      },
+      "name": "Create Fix Branch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2250,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/contents/{{ $('Prepare GitHub PR').first().json.path }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $('Prepare GitHub PR').first().json.commitMsg, content: $('Prepare GitHub PR').first().json.base64Content, sha: $('Prepare GitHub PR').first().json.fileSha, branch: $('Prepare GitHub PR').first().json.branchName }) }}",
+        "options": {}
+      },
+      "name": "Commit Fix",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2500,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/pulls",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ title: $('Prepare GitHub PR').first().json.prTitle, body: $('Prepare GitHub PR').first().json.prBody, head: $('Prepare GitHub PR').first().json.branchName, base: 'dev', draft: true }) }}",
+        "options": {}
+      },
+      "name": "Create Draft PR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2750,
+        350
+      ]
     }
   ],
   "connections": {
@@ -145,6 +266,61 @@
         [
           {
             "node": "Analyze with Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze with Ollama": {
+      "main": [
+        [
+          {
+            "node": "Prepare GitHub PR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare GitHub PR": {
+      "main": [
+        [
+          {
+            "node": "Get Dev Branch SHA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Dev Branch SHA": {
+      "main": [
+        [
+          {
+            "node": "Create Fix Branch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Fix Branch": {
+      "main": [
+        [
+          {
+            "node": "Commit Fix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Commit Fix": {
+      "main": [
+        [
+          {
+            "node": "Create Draft PR",
             "type": "main",
             "index": 0
           }
