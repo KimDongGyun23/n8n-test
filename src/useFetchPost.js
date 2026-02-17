@@ -1,5 +1,5 @@
-import { captureException } from "@sentry/react";
 import { useCallback, useState } from "react";
+import { logger } from "./logger";
 
 export function useFetchPost() {
   const [post, setPost] = useState(null);
@@ -15,31 +15,36 @@ export function useFetchPost() {
     setLoading(true);
     setError(null);
     try {
-      // API 호출 및 응답 검증
       const response = await fetch(`https://jsonplaceholder.typicode.com/posts/${postId}`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}: 해당 포스트를 찾을 수 없음`);
+
+      // HTTP 오류 처리: post를 찾을 수 없는 상황을 가정
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: 해당 포스트를 찾을 수 없음`, {
+          name: "FetchError",
+          logContext: {
+            tags: { source: "api-fetch", endpoint: `/posts/${postId}` },
+            extra: { status: response.status, statusText: response.statusText },
+          },
+        });
+      }
 
       const data = await response.json();
 
-      // userId 필드 검증
+      // API 응답 검증: userId 필드 존재 여부 확인
       if (!data.userId) {
-        const apiError = new Error("API 응답에 userId 필드가 없음");
-        apiError.name = "ValidationError";
-        captureException(apiError, {
-          tags: { source: "api-validation", endpoint: `/posts/${postId}` },
-          extra: { receivedData: data, expected: "userId present" },
+        const validationError = new Error("API 응답에 userId 필드가 없음", {
+          name: "ValidationError",
+          logContext: {
+            tags: { source: "api-validation", endpoint: `/posts/${postId}` },
+            extra: { receivedData: data, expected: "userId present" },
+          },
         });
-        setError("userId 필드가 없습니다.");
-        return;
+        throw validationError;
       }
 
       setPost(data);
     } catch (err) {
-      captureException(err, {
-        fingerprint: ["api-fetch-error"],
-        tags: { source: "jsonplaceholder" },
-        extra: { postId, attemptedUrl: `posts/${postId}` },
-      });
+      logger.error(err, err.logContext || {});
       setError(err.message);
     } finally {
       setLoading(false);
