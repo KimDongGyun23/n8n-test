@@ -1,67 +1,59 @@
-/**
- * Sentry 에러 정보 + GitHub 소스 코드를 조합하여
- * Ollama 분석 요청 프롬프트를 생성하는 n8n Code 노드
- *
- * 입력:
- * - "Extract Sentry Error" 노드: errorInfo (issueId, title, message, errorType, path, functionName, level, priority)
- * - 이전 노드 (GitHub API, Accept: v3+json): { content, encoding, sha, path, ... }
- *
- * 출력:
- *   - errorInfo 필드 + source_code, file_sha, ollama_body
- */
-const githubFile = $input.first().json;
-const errorInfo = $("Extract Sentry Error").first().json;
+const data = $input.first().json;
+const files = data.files ?? [];
+const primaryFile = files[0];
 
-// GitHub Contents API (v3+json) 응답에서 소스 코드 & SHA 추출
-let sourceCode = "// 소스 코드를 가져올 수 없음";
-let fileSha = githubFile.sha ?? "unknown";
+const AI_TEMPRATURE = 0.1;
+const AI_TOP_P = 0.9;
+const AI_NUM_CTX = 8192; // 모델 컨텍스트 길이 확장
 
-if (githubFile.encoding === "base64" && typeof githubFile.content === "string") {
-  try {
-    sourceCode = Buffer.from(githubFile.content, "base64").toString("utf-8");
-  } catch {
-    sourceCode = "// base64 디코딩 실패";
-  }
-} else if (typeof githubFile.content === "string") {
-  sourceCode = githubFile.content;
-}
+// 원인 체인 정보 가공
+const causesSection =
+  (data.error?.causes ?? []).length > 0
+    ? data.error.causes.map((c, i) => `${i + 1}. **${c.name}**: ${c.message}`).join("\n")
+    : "없음";
 
-// Ollama 프롬프트 생성
-const prompt = `당신은 시니어 프론트엔드 개발자입니다. 아래 에러를 분석하고 수정 코드를 JSON으로 응답하세요.
+// AI 분석을 위한 코드 섹션 구성
+const codeContextSection = files
+  .map((f) => {
+    return `### File: ${f.file}\n\`\`\`javascript\n${f.codeSnippet}\n\`\`\``;
+  })
+  .join("\n\n");
 
-## 에러 정보
-- 제목: ${errorInfo.title}
-- 에러 타입: ${errorInfo.errorType}
-- 메시지: ${errorInfo.message}
-- 파일: ${errorInfo.path}
-- 함수: ${errorInfo.functionName || "알 수 없음"}
-- 심각도: ${errorInfo.level} / 우선순위: ${errorInfo.priority}
+const prompt = `당신은 시니어 프론트엔드 개발자이자 디버깅 전문가입니다. 
+제공된 에러 맥락과 소스 코드를 교차 분석하여 근본 원인을 찾고, 노션(Notion) 리포트용 JSON 응답을 생성하세요.
 
-## 원본 소스 코드 (${errorInfo.path})
-\`\`\`
-${sourceCode}
-\`\`\`
+## 1. 에러 맥락
+- 에러명: ${data.title}
+- 메시지: ${data.error.message}
+- 발생 위치: ${data.error.primaryLocation}
+- 호출 흐름: ${data.error.stackSummary}
+- 환경: ${data.context.os} / ${data.context.browser} (${data.context.env})
 
-## 요구사항
-1. 에러 원인을 정확히 분석하세요.
-2. fix_code에는 import부터 export까지 **전체 파일** 수정본을 포함하세요.
-3. 수정이 필요한 부분만 변경하고, 나머지는 원본과 동일하게 유지하세요.
-4. PR 본문은 동료 개발자가 이해하기 쉽게 작성하세요.
+## 2. 원인 체인 (error.cause)
+${causesSection}
 
-## 응답 형식 (JSON만 출력)
+## 3. 관련 소스 코드 (에러 지점 주변부)
+${codeContextSection}
+
+## 4. 상세 분석 및 응답 요구사항 (중요)
+- **problemAnalysis**: 단순 현상이 아닌 '왜' 발생했는지 분석하세요. 핵심 키워드에 **볼드**를 사용하세요.
+- **fixStrategy**: 어떤 방향으로 고칠지 1~2문장으로 요약하세요.
+- **fixContent**: 구체적인 변경 사항을 **반드시 한 줄에 하나씩 글머리 기호('-')를 사용하여 리스트 형태로** 작성하세요. 각 줄 사이에는 줄바꿈을 포함하세요.
+- **fixCode**: 수정이 필요한 부분만 **작업 단위(함수 또는 블록)**별로 작성하세요. 전체 파일을 작성하지 마세요. 반드시 변경 전/후의 맥락을 알 수 있는 주석을 포함하세요. 줄 번호는 반드시 포함하지 마세요.
+- **riskLevel**: LOW, MEDIUM, HIGH 중 하나를 선택하세요.
+- **testSteps**: 검증을 위해 필요한 단계를 배열 형태로 작성하세요.
+
+## 5. 응답 형식 (JSON만 출력, 코드 블록 기호 \`\`\`json 금지)
 {
-  "summary": "에러 원인 한줄 요약",
-  "problemAnalysis": "에러의 근본 원인과 발생 배경",
-  "fixStrategy": "수정 전략 2-3문장",
-  "fixContent": "구체적으로 어떤 부분을 어떻게 고쳤는지",
-  "fixCode": "import부터 export까지 전체 수정된 파일 코드",
-  "testSteps": ["테스트 단계1", "단계2", "단계3"],
-  "commitMsg": "fix: 구체적인 수정 내용 (50자 이내)",
-  "prTitle": "Auto-fix: 에러명과 수정 내용",
-  "riskLevel": "LOW | MEDIUM | HIGH"
-}
-
-JSON만 출력하세요. 코드블록이나 다른 텍스트 없이 순수 JSON만 반환하세요.`;
+  "summary": "한 줄 요약",
+  "problemAnalysis": "근본 원인 상세 분석",
+  "fixStrategy": "해결을 위한 접근 방식",
+  "fixContent": "- 변경 사항 1\\n- 변경 사항 2\\n- 변경 사항 3",
+  "fixFilePath": "${primaryFile?.file || "src/..."}",
+  "fixCode": "// [수정된 함수/블록명]\\nfunction example() {\\n  // ... 기존 코드\\n  // FIXED: 에러 방지를 위해 null 체크 추가\\n  if (data) { \\n    // ... 수정된 로직\\n  }\\n}",
+  "testSteps": ["테스트 단계 1", "단계 2"],
+  "riskLevel": "LOW | MEDIUM | HIGH",
+}`;
 
 const ollamaBody = {
   model: "deepseek-coder-v2:16b",
@@ -69,17 +61,16 @@ const ollamaBody = {
   stream: false,
   format: "json",
   options: {
-    temperature: 0.1,
-    top_p: 0.9,
+    temperature: AI_TEMPRATURE,
+    top_p: AI_TOP_P,
+    num_ctx: AI_NUM_CTX,
   },
 };
 
 return [
   {
     json: {
-      ...errorInfo,
-      sourceCode,
-      fileSha,
+      ...data,
       ollamaBody,
     },
   },

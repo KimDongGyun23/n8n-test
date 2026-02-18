@@ -1,12 +1,12 @@
 {
-  "name": "Sentry Error PR Bot",
+  "name": "Error Auto-Fix Notion Bot",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
-        "path": "sentry-error-pr-bot"
+        "path": "error-auto-fix"
       },
-      "name": "Sentry Webhook",
+      "name": "Error Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
@@ -16,9 +16,9 @@
     },
     {
       "parameters": {
-        "jsCode": "/**\r\n * Sentry Webhook에서 에러 정보를 추출하는 스크립트\r\n *\r\n * n8n 워크플로우의 Code 노드에서 사용\r\n * 입력: Sentry Webhook의 JSON 페이로드\r\n * 출력: 에러 핵심 정보가 담긴 JSON 객체\r\n *\r\n * 주요 정보:\r\n * - issueId: Sentry 이슈 ID\r\n * - title: 이슈 제목\r\n * - level: 에러 심각도\r\n * - priority: Sentry에서 설정한 우선순위\r\n * - message: 에러 메시지\r\n * - errorType: 에러 유형 (예: TypeError)\r\n * - filename: 에러가 발생한 파일명\r\n * - functionName: 에러가 발생한 함수명\r\n */\r\nconst item = $input.first();\r\nconsole.log(\"Received input:\", JSON.stringify(item, null, 2));\r\n// return [{ json: { body: $input.first().json.body } }];\r\n\r\nif (!item || !item.json) {\r\n  throw new Error(\"Invalid input: missing json\");\r\n}\r\n\r\n// Sentry Webhook 기본 구조에 맞춰 파싱\r\nconst root = item.json;\r\nconst body = root.body ?? {};\r\nconst data = body.data ?? {};\r\nconst { id, title, level, metadata, priority, culprit } = data?.issue || {};\r\n\r\n// 괄호 안 내용만 추출: ?(src/ErrorButton) -> src/ErrorButton\r\nconst innerMatch = culprit.match(/\\(([^()]+)\\)/);\r\nconst inner = innerMatch ? innerMatch[1] : culprit;\r\n\r\n// 파일 경로 형태로 변경 (src/... 또는 /src/...)\r\nconst isSafePath = /^\\/?src[\\/\\\\][\\w./-]+$/.test(inner);\r\nlet filePath = isSafePath ? inner.replace(/\\\\/g, \"/\") : null;\r\n\r\n/**\r\n * 확장자 자동 추가: 대문자로 시작하면 .jsx, 아니면 .js\r\n * 유료 버전의 한계로 인해, 컴포넌트는 대문자로 시작하는 경우가 많으므로 이를 기준으로 확장자 결정\r\n * 예: src/ErrorButton → src/ErrorButton.jsx, src/utils/helper → src/utils/helper.js\r\n */\r\nif (filePath) {\r\n  // 마지막 세그먼트 추출\r\n  const segments = filePath.split(\"/\");\r\n  const last = segments[segments.length - 1] || \"\";\r\n  const firstChar = last.charAt(0);\r\n\r\n  // 마지막 이름이 대문자로 시작하면 컴포넌트로 보고 .jsx, 아니면 .js\r\n  if (firstChar >= \"A\" && firstChar <= \"Z\") filePath = `${filePath}.jsx`;\r\n  else filePath = `${filePath}.js`;\r\n}\r\n\r\nconst errorInfo = {\r\n  issueId: id,\r\n  title,\r\n  level,\r\n  priority,\r\n  message: metadata?.value || \"\",\r\n  errorType: metadata?.type || \"error\",\r\n  path: filePath,\r\n  functionName: metadata?.function || \"\",\r\n};\r\n\r\n// 다음 노드로 전달\r\nreturn [{ json: errorInfo }];"
+        "jsCode": "/**\r\n * 프론트엔드 logger 에러 페이로드 분석 및 정규화\r\n *\r\n * - 에러 및 호출 지점(CallSite) 통합 분석\r\n * - 'src/' 경로를 포함한 실제 소스 코드 위치 추출 (중복 제거)\r\n * - 메타데이터(UA, URL) 정리\r\n */\r\nconst item = $input.first();\r\nconst body = item.json.body || item.json;\r\n\r\nconst { error = {}, callSite = {}, meta = {} } = body;\r\n\r\n// 모든 트레이스 합치기 (에러 발생 지점이 앞서도록 순서 유지)\r\nconst allTraces = [...(error.traces || []), ...(callSite.traces || [])];\r\n\r\nconst seen = new Set();\r\nconst srcFiles = [];\r\n\r\nfor (const trace of allTraces) {\r\n  if (!trace.file) continue;\r\n\r\n  // 'src/' 경로 포함 여부 확인 후 추출\r\n  const match = trace.file.match(/(src\\/.*)$/);\r\n  if (!match) continue;\r\n\r\n  // 중복 제거: 동일한 파일 경로는 한 번만 기록\r\n  const filePath = match[1];\r\n  if (seen.has(filePath)) continue;\r\n  seen.add(filePath);\r\n\r\n  srcFiles.push({\r\n    file: filePath,\r\n    fn: trace.function,\r\n    location: `${trace.line}:${trace.column}`,\r\n    full: `${filePath}:${trace.line}:${trace.column}`,\r\n  });\r\n}\r\n\r\n/**\r\n * URL에서 경로 부분만 추출 (쿼리, 해시 제거)\r\n */\r\nconst getUrlPath = (urlStr) => {\r\n  if (!urlStr) return \"unknown\";\r\n  const match = urlStr.match(/https?:\\/\\/[^\\/]+(\\/[^?#]*)/);\r\n  if (match && match[1]) return match[1];\r\n\r\n  return urlStr.startsWith(\"/\") ? urlStr.split(/[?#]/)[0] : \"/\";\r\n};\r\n\r\n/**\r\n * UserAgent에서 핵심 정보만 추출\r\n */\r\nfunction parseUA(ua) {\r\n  if (!ua) return { browser: \"unknown\", os: \"unknown\" };\r\n\r\n  let browser = \"Other\";\r\n  if (ua.includes(\"Chrome\")) browser = \"Chrome\";\r\n  else if (ua.includes(\"Firefox\")) browser = \"Firefox\";\r\n  else if (ua.includes(\"Safari\")) browser = \"Safari\";\r\n\r\n  let os = \"Other\";\r\n  if (ua.includes(\"Mac\")) os = \"macOS\";\r\n  else if (ua.includes(\"Win\")) os = \"Windows\";\r\n  else if (ua.includes(\"Android\")) os = \"Android\";\r\n  else if (ua.includes(\"iPhone\")) os = \"iOS\";\r\n\r\n  return { browser, os };\r\n}\r\n\r\nconst uaInfo = parseUA(meta.userAgent);\r\nconst primaryLocation = srcFiles[0]?.full || \"unknown\";\r\nconst stackSummary = srcFiles\r\n  .map((f) => `${f.file.split(\"/\").pop()}:${f.location.split(\":\")[0]}`)\r\n  .join(\" <- \");\r\n\r\nreturn [\r\n  {\r\n    json: {\r\n      title: `[${error.name || \"Error\"}] ${error.message}`,\r\n      callSiteStack: callSite.stack,\r\n      error: {\r\n        ...error,\r\n        srcFiles,\r\n        primaryLocation,\r\n        stackSummary,\r\n      },\r\n      context: {\r\n        url: meta.url,\r\n        path: getUrlPath(meta.url),\r\n        browser: uaInfo.browser,\r\n        os: uaInfo.os,\r\n        userAgent: meta.userAgent,\r\n        env: meta.environment,\r\n      },\r\n      timestamp: meta.timestamp || new Date().toISOString(),\r\n    },\r\n  },\r\n];"
       },
-      "name": "Extract Sentry Error",
+      "name": "Extract Error Info",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -28,24 +28,11 @@
     },
     {
       "parameters": {
-        "method": "GET",
-        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/contents/{{ $json.path }}?ref=dev",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "headerAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/vnd.github.v3+json"
-            }
-          ]
-        },
-        "options": {}
+        "jsCode": "/**\n * srcFiles 배열을 순회하며 각 파일의 절대 경로를 계산하고, 존재 여부를 확인한 후,\n * 에러가 발생한 위치를 중심으로 앞뒤 20줄씩의 코드 스니펫을 생성하여 반환\n *\n * - AI가 이해하기 쉽도록 줄 번호와 함께 표시\n */\nconst fs = require(\"fs\");\nconst path = require(\"path\");\n\nconst data = $input.first().json;\n\n// srcFiles는 extract-error.js에서 추출된 에러 발생 위치 정보 배열 (최대 3개)\nconst srcFiles = (data.error?.srcFiles ?? []).slice(0, 3);\n\n/**\n * 각 srcFile에 대해 절대 경로 계산, 존재 여부 확인, 코드 스니펫 생성\n *\n * - 존재하지 않는 파일은 exists: false로 표시\n * - 코드 스니펫은 에러 발생 위치를 중심으로 앞뒤 20줄씩 포함 (총 40줄)\n */\nconst files = srcFiles.map((file) => {\n  const relativePath = file.file;\n  const absolutePath = path.resolve(\"/app\", relativePath);\n\n  let exists = false;\n  let codeSnippet = \"\";\n  let sourceCode = \"\";\n\n  try {\n    if (fs.existsSync(absolutePath)) {\n      exists = true;\n      sourceCode = fs.readFileSync(absolutePath, \"utf-8\");\n\n      if (file.location) {\n        // \"22:15\" -> 22 추출\n        const targetLine = parseInt(file.location.split(\":\")[0]);\n        const lines = sourceCode.split(\"\\n\");\n\n        // 앞뒤 20줄 범위 설정 (파일 시작과 끝 범위 체크)\n        const start = Math.max(0, targetLine - 21);\n        const end = Math.min(lines.length, targetLine + 20);\n\n        // 줄 번호를 추가하여 슬라이싱\n        codeSnippet = lines\n          .slice(start, end)\n          .map((line, index) => {\n            const currLineNum = start + index + 1;\n            const marker = currLineNum === targetLine ? \" > \" : \"   \";\n            return `${marker}${currLineNum} | ${line}`;\n          })\n          .join(\"\\n\");\n      }\n    }\n  } catch (err) {\n    codeSnippet = `// 파일 읽기 실패: ${err.message}`;\n  }\n\n  return {\n    ...file,\n    absolutePath,\n    exists,\n    codeSnippet,\n  };\n});\n\nreturn [\n  {\n    json: {\n      ...data,\n      files,\n      primarySnippet: files[0]?.codeSnippet || \"코드 스니펫을 생성할 수 없습니다.\",\n      primaryFile: files[0]?.file || \"unknown\",\n    },\n  },\n];"
       },
-      "name": "Fetch Source From GitHub",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "name": "Read Source Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         750,
         350
@@ -53,7 +40,7 @@
     },
     {
       "parameters": {
-        "jsCode": "/**\r\n * Sentry 에러 정보 + GitHub 소스 코드를 조합하여\r\n * Ollama 분석 요청 프롬프트를 생성하는 n8n Code 노드\r\n *\r\n * 입력:\r\n * - \"Extract Sentry Error\" 노드: errorInfo (issueId, title, message, errorType, path, functionName, level, priority)\r\n * - 이전 노드 (GitHub API, Accept: v3+json): { content, encoding, sha, path, ... }\r\n *\r\n * 출력:\r\n *   - errorInfo 필드 + source_code, file_sha, ollama_body\r\n */\r\nconst githubFile = $input.first().json;\r\nconst errorInfo = $(\"Extract Sentry Error\").first().json;\r\n\r\n// GitHub Contents API (v3+json) 응답에서 소스 코드 & SHA 추출\r\nlet sourceCode = \"// 소스 코드를 가져올 수 없음\";\r\nlet fileSha = githubFile.sha ?? \"unknown\";\r\n\r\nif (githubFile.encoding === \"base64\" && typeof githubFile.content === \"string\") {\r\n  try {\r\n    sourceCode = Buffer.from(githubFile.content, \"base64\").toString(\"utf-8\");\r\n  } catch {\r\n    sourceCode = \"// base64 디코딩 실패\";\r\n  }\r\n} else if (typeof githubFile.content === \"string\") {\r\n  sourceCode = githubFile.content;\r\n}\r\n\r\n// Ollama 프롬프트 생성\r\nconst prompt = `당신은 시니어 프론트엔드 개발자입니다. 아래 에러를 분석하고 수정 코드를 JSON으로 응답하세요.\r\n\r\n## 에러 정보\r\n- 제목: ${errorInfo.title}\r\n- 에러 타입: ${errorInfo.errorType}\r\n- 메시지: ${errorInfo.message}\r\n- 파일: ${errorInfo.path}\r\n- 함수: ${errorInfo.functionName || \"알 수 없음\"}\r\n- 심각도: ${errorInfo.level} / 우선순위: ${errorInfo.priority}\r\n\r\n## 원본 소스 코드 (${errorInfo.path})\r\n\\`\\`\\`\r\n${sourceCode}\r\n\\`\\`\\`\r\n\r\n## 요구사항\r\n1. 에러 원인을 정확히 분석하세요.\r\n2. fix_code에는 import부터 export까지 **전체 파일** 수정본을 포함하세요.\r\n3. 수정이 필요한 부분만 변경하고, 나머지는 원본과 동일하게 유지하세요.\r\n4. PR 본문은 동료 개발자가 이해하기 쉽게 작성하세요.\r\n\r\n## 응답 형식 (JSON만 출력)\r\n{\r\n  \"summary\": \"에러 원인 한줄 요약\",\r\n  \"problemAnalysis\": \"에러의 근본 원인과 발생 배경\",\r\n  \"fixStrategy\": \"수정 전략 2-3문장\",\r\n  \"fixContent\": \"구체적으로 어떤 부분을 어떻게 고쳤는지\",\r\n  \"fixCode\": \"import부터 export까지 전체 수정된 파일 코드\",\r\n  \"testSteps\": [\"테스트 단계1\", \"단계2\", \"단계3\"],\r\n  \"commitMsg\": \"fix: 구체적인 수정 내용 (50자 이내)\",\r\n  \"prTitle\": \"Auto-fix: 에러명과 수정 내용\",\r\n  \"riskLevel\": \"LOW | MEDIUM | HIGH\"\r\n}\r\n\r\nJSON만 출력하세요. 코드블록이나 다른 텍스트 없이 순수 JSON만 반환하세요.`;\r\n\r\nconst ollamaBody = {\r\n  model: \"deepseek-coder-v2:16b\",\r\n  prompt,\r\n  stream: false,\r\n  format: \"json\",\r\n  options: {\r\n    temperature: 0.1,\r\n    top_p: 0.9,\r\n  },\r\n};\r\n\r\nreturn [\r\n  {\r\n    json: {\r\n      ...errorInfo,\r\n      sourceCode,\r\n      fileSha,\r\n      ollamaBody,\r\n    },\r\n  },\r\n];"
+        "jsCode": "const data = $input.first().json;\r\nconst files = data.files ?? [];\r\nconst primaryFile = files[0];\r\n\r\nconst AI_TEMPRATURE = 0.1;\r\nconst AI_TOP_P = 0.9;\r\nconst AI_NUM_CTX = 8192; // 모델 컨텍스트 길이 확장\r\n\r\n// 원인 체인 정보 가공\r\nconst causesSection =\r\n  (data.error?.causes ?? []).length > 0\r\n    ? data.error.causes.map((c, i) => `${i + 1}. **${c.name}**: ${c.message}`).join(\"\\n\")\r\n    : \"없음\";\r\n\r\n// AI 분석을 위한 코드 섹션 구성\r\nconst codeContextSection = files\r\n  .map((f) => {\r\n    return `### File: ${f.file}\\n\\`\\`\\`javascript\\n${f.codeSnippet}\\n\\`\\`\\``;\r\n  })\r\n  .join(\"\\n\\n\");\r\n\r\nconst prompt = `당신은 시니어 프론트엔드 개발자이자 디버깅 전문가입니다. \r\n제공된 에러 맥락과 소스 코드를 교차 분석하여 근본 원인을 찾고, 노션(Notion) 리포트용 JSON 응답을 생성하세요.\r\n\r\n## 1. 에러 맥락\r\n- 에러명: ${data.title}\r\n- 메시지: ${data.error.message}\r\n- 발생 위치: ${data.error.primaryLocation}\r\n- 호출 흐름: ${data.error.stackSummary}\r\n- 환경: ${data.context.os} / ${data.context.browser} (${data.context.env})\r\n\r\n## 2. 원인 체인 (error.cause)\r\n${causesSection}\r\n\r\n## 3. 관련 소스 코드 (에러 지점 주변부)\r\n${codeContextSection}\r\n\r\n## 4. 상세 분석 및 응답 요구사항 (중요)\r\n- **problemAnalysis**: 단순 현상이 아닌 '왜' 발생했는지 분석하세요. 핵심 키워드에 **볼드**를 사용하세요.\r\n- **fixStrategy**: 어떤 방향으로 고칠지 1~2문장으로 요약하세요.\r\n- **fixContent**: 구체적인 변경 사항을 **반드시 한 줄에 하나씩 글머리 기호('-')를 사용하여 리스트 형태로** 작성하세요. 각 줄 사이에는 줄바꿈을 포함하세요.\r\n- **fixCode**: 수정이 필요한 부분만 **작업 단위(함수 또는 블록)**별로 작성하세요. 전체 파일을 작성하지 마세요. 반드시 변경 전/후의 맥락을 알 수 있는 주석을 포함하세요. 줄 번호는 반드시 포함하지 마세요.\r\n- **riskLevel**: LOW, MEDIUM, HIGH 중 하나를 선택하세요.\r\n- **testSteps**: 검증을 위해 필요한 단계를 배열 형태로 작성하세요.\r\n\r\n## 5. 응답 형식 (JSON만 출력, 코드 블록 기호 \\`\\`\\`json 금지)\r\n{\r\n  \"summary\": \"한 줄 요약\",\r\n  \"problemAnalysis\": \"근본 원인 상세 분석\",\r\n  \"fixStrategy\": \"해결을 위한 접근 방식\",\r\n  \"fixContent\": \"- 변경 사항 1\\\\n- 변경 사항 2\\\\n- 변경 사항 3\",\r\n  \"fixFilePath\": \"${primaryFile?.file || \"src/...\"}\",\r\n  \"fixCode\": \"// [수정된 함수/블록명]\\\\nfunction example() {\\\\n  // ... 기존 코드\\\\n  // FIXED: 에러 방지를 위해 null 체크 추가\\\\n  if (data) { \\\\n    // ... 수정된 로직\\\\n  }\\\\n}\",\r\n  \"testSteps\": [\"테스트 단계 1\", \"단계 2\"],\r\n  \"riskLevel\": \"LOW | MEDIUM | HIGH\",\r\n}`;\r\n\r\nconst ollamaBody = {\r\n  model: \"deepseek-coder-v2:16b\",\r\n  prompt,\r\n  stream: false,\r\n  format: \"json\",\r\n  options: {\r\n    temperature: AI_TEMPRATURE,\r\n    top_p: AI_TOP_P,\r\n    num_ctx: AI_NUM_CTX,\r\n  },\r\n};\r\n\r\nreturn [\r\n  {\r\n    json: {\r\n      ...data,\r\n      ollamaBody,\r\n    },\r\n  },\r\n];"
       },
       "name": "Build Ollama Prompt",
       "type": "n8n-nodes-base.code",
@@ -84,7 +71,7 @@
     },
     {
       "parameters": {
-        "jsCode": "/**\r\n * Ollama API 응답을 파싱하여 분석 결과를 구조화하는 n8n Code 노드\r\n *\r\n * 입력:\r\n *   - 이전 노드 (HTTP Request → Ollama): { response, model, done, ... }\r\n *   - \"Build Ollama Prompt\" 노드: errorInfo + sourceCode, fileSha, ollamaBody\r\n *\r\n * 출력:\r\n *   - 에러 정보 + Ollama 분석 결과 (PR 생성에 필요한 모든 필드)\r\n */\r\nconst ollamaRaw = $input.first().json;\r\nconst promptData = $(\"Build Ollama Prompt\").first().json;\r\n\r\n// Ollama 응답 파싱\r\nconst REQUIRED_FIELDS = [\"summary\", \"fixCode\", \"commitMsg\", \"prTitle\", \"riskLevel\"];\r\n\r\nlet analysis;\r\n\r\ntry {\r\n  // 응답이 문자열인지 객체인지 확인 후 파싱\r\n  const raw = typeof ollamaRaw === \"string\" ? ollamaRaw : ollamaRaw.response;\r\n  // JSON 파싱 시도 (Ollama가 JSON이 아닌 텍스트를 반환할 수도 있으므로)\r\n  const parsed = typeof raw === \"string\" ? JSON.parse(raw) : raw;\r\n\r\n  // 필수 필드 검증\r\n  const missing = REQUIRED_FIELDS.filter((field) => !parsed[field]);\r\n  if (missing.length > 0) throw new Error(`필수 필드 누락: ${missing.join(\", \")}`);\r\n\r\n  analysis = {\r\n    summary: parsed.summary,\r\n    problemAnalysis: parsed.problemAnalysis ?? \"\",\r\n    fixStrategy: parsed.fixStrategy ?? \"\",\r\n    fixContent: parsed.fixContent ?? \"\",\r\n    fixCode: parsed.fixCode,\r\n    testSteps: Array.isArray(parsed.testSteps) ? parsed.testSteps : [],\r\n    commitMsg: parsed.commitMsg,\r\n    prTitle: parsed.prTitle,\r\n    riskLevel: parsed.riskLevel,\r\n  };\r\n} catch (err) {\r\n  analysis = {\r\n    summary: \"Ollama 응답 파싱 실패\",\r\n    problemAnalysis: err.message,\r\n    fixStrategy: \"\",\r\n    fixContent: \"\",\r\n    fixCode: \"\",\r\n    testSteps: [],\r\n    commitMsg: \"\",\r\n    prTitle: \"\",\r\n    riskLevel: \"HIGH\",\r\n    _parseError: true,\r\n    _rawResponse: String(ollamaRaw.response ?? \"\").slice(0, 2000),\r\n  };\r\n}\r\n\r\nreturn [\r\n  {\r\n    json: {\r\n      // 에러 메타 정보\r\n      ...promptData,\r\n\r\n      // Ollama 분석 결과\r\n      ...analysis,\r\n    },\r\n  },\r\n];"
+        "jsCode": "/**\r\n * Ollama API 응답을 파싱하여 분석 결과를 구조화하는 노드\r\n */\r\nconst ollamaRaw = $input.first().json;\r\n\r\n// 명시적으로 이전 노드 이름을 지정하여 데이터 유실 방지\r\nconst promptData = $(\"Build Ollama Prompt\").first().json;\r\nconst REQUIRED_FIELDS = [\"summary\", \"fixCode\", \"riskLevel\"];\r\n\r\nlet analysis;\r\n\r\ntry {\r\n  // Ollama 노드 버전에 따라 'response' 또는 'message.content'에 담길 수 있음\r\n  const raw = ollamaRaw.response || (ollamaRaw.message && ollamaRaw.message.content) || ollamaRaw;\r\n\r\n  // JSON 파싱\r\n  let parsed;\r\n  if (typeof raw === \"string\") parsed = JSON.parse(raw.trim());\r\n  else parsed = raw;\r\n\r\n  // 필수 필드 검증\r\n  const missing = REQUIRED_FIELDS.filter((field) => !parsed[field]);\r\n  if (missing.length > 0) throw new Error(`필수 필드 누락: ${missing.join(\", \")}`);\r\n\r\n  // 데이터 정규화\r\n  analysis = {\r\n    summary: parsed.summary,\r\n    problemAnalysis: parsed.problemAnalysis ?? \"\",\r\n    fixStrategy: parsed.fixStrategy ?? \"\",\r\n    fixContent: parsed.fixContent ?? \"\",\r\n    fixCode: parsed.fixCode,\r\n    fixFilePath:\r\n      parsed.fixFilePath ?? promptData.error?.primaryLocation?.split(\":\")[0] ?? \"unknown\",\r\n    testSteps: Array.isArray(parsed.testSteps) ? parsed.testSteps : [],\r\n    riskLevel: parsed.riskLevel,\r\n  };\r\n} catch (err) {\r\n  // 실패 시 폴백 데이터\r\n  analysis = {\r\n    summary: \"Ollama 분석 응답 파싱 실패\",\r\n    problemAnalysis: `에러 요인: ${err.message}\\n\\nAI 원본 응답을 확인하세요.`,\r\n    fixStrategy: \"N/A\",\r\n    fixContent: \"N/A\",\r\n    fixCode: \"// AI 응답 파싱 실패로 코드를 표시할 수 없습니다.\",\r\n    fixFilePath: \"unknown\",\r\n    testSteps: [],\r\n    riskLevel: \"HIGH\",\r\n    _parseError: true,\r\n    _rawResponse: String(ollamaRaw.response || JSON.stringify(ollamaRaw)).slice(0, 1000),\r\n  };\r\n}\r\n\r\nreturn [\r\n  {\r\n    json: {\r\n      ...promptData,\r\n      ...analysis,\r\n    },\r\n  },\r\n];"
       },
       "name": "Analyze with Ollama",
       "type": "n8n-nodes-base.code",
@@ -96,9 +83,9 @@
     },
     {
       "parameters": {
-        "jsCode": "/**\r\n * Ollama 분석 결과를 GitHub Draft PR 생성에 필요한 형태로 가공하는 n8n Code 노드\r\n *\r\n * 입력:\r\n *   - 이전 노드 (Analyze with Ollama): errorInfo + Ollama 분석 결과\r\n *\r\n * 출력:\r\n *   - branchName: 자동 생성된 브랜치명\r\n *   - base64Content: fixCode를 base64 인코딩\r\n *   - prBody: 마크다운 PR 본문\r\n *   - commitMsg, prTitle, fileSha, path 등 패스스루\r\n */\r\nconst data = $input.first().json;\r\n\r\n// Ollama 파싱 실패 시 중단\r\nif (data._parseError) {\r\n  throw new Error(`Ollama 분석 실패: ${data.problemAnalysis}`);\r\n}\r\n\r\nif (!data.fixCode || !data.commitMsg || !data.prTitle) {\r\n  throw new Error(\"PR 생성에 필요한 필드 누락 (fixCode, commitMsg, prTitle)\");\r\n}\r\n\r\n// 브랜치명 생성\r\nconst timeStamp = Date.now();\r\nconst branchName = `auto-fix/sentry-${data.issueId}-${timeStamp}`;\r\n\r\n// fixCode에서 마크다운 코드펜스 제거\r\nconst cleanCode = data.fixCode.replace(/^```[\\w]*\\n?/, \"\").replace(/\\n?```$/, \"\");\r\n\r\n// fixCode를 base64 인코딩 (GitHub Contents API 요구사항)\r\nconst base64Content = Buffer.from(cleanCode, \"utf-8\").toString(\"base64\");\r\n\r\n// PR 본문 마크다운 생성\r\nconst testStepsStr = Array.isArray(data.testSteps)\r\n  ? data.testSteps.map((step) => `- [ ] ${step}`).join(\"\\n\")\r\n  : \"- [ ] 수동 테스트 필요\";\r\n\r\nconst prBody = `## Sentry Issue #${data.issueId}\r\n\r\n> ${data.title}\r\n\r\n### 요약\r\n${data.summary}\r\n\r\n### 위험도\r\n**${data.riskLevel}**\r\n\r\n---\r\n\r\n### 원인 분석\r\n${data.problemAnalysis}\r\n\r\n### 수정 전략\r\n${data.fixStrategy}\r\n\r\n---\r\n\r\n### 수정 파일\r\n\\`${data.path}\\`\r\n\r\n### 변경 내용\r\n${data.fixContent}\r\n\r\n### 테스트 체크리스트\r\n${testStepsStr}\r\n\r\n---\r\n*이 PR은 Sentry Error PR Bot에 의해 자동 생성되었습니다.*`;\r\n\r\nreturn [\r\n  {\r\n    json: {\r\n      branchName,\r\n      base64Content,\r\n      prBody,\r\n      commitMsg: data.commitMsg,\r\n      prTitle: data.prTitle,\r\n      fileSha: data.fileSha,\r\n      path: data.path,\r\n      issueId: data.issueId,\r\n    },\r\n  },\r\n];"
+        "jsCode": "/**\n * Ollama 분석 결과를 Notion 이슈 페이지 생성 형태로 가공\n *\n * - Notion API 2000자 제한 대응 (문자열 슬라이싱 및 분할 처리 준비)\n * - 에러 리포트 가독성을 위한 Callout 블록 도입\n * - 데이터베이스 속성명 정규화\n */\nconst data = $input.first().json;\n\n// AI 응답 코드 정제 (```javascript ... ``` 기호 제거)\nconst cleanFixCode = data.fixCode\n  ? data.fixCode.replace(/```[a-z]*\\n?|```/gi, \"\").trim()\n  : \"수정 코드가 생성되지 않았습니다.\";\n\n// 관련 파일 목록 정리\nconst relatedFiles = (data.error?.srcFiles ?? [])\n  .map((f) => `${f.file} (${f.fn ?? \"unknown\"})`)\n  .join(\", \");\n\n// Notion Rich Text 헬퍼: **bold** 패턴을 인식하여 annotations 적용\nfunction parseMarkdown(content) {\n  if (!content) return [];\n\n  // 볼드 패턴(**text**)을 기준으로 텍스트 분할\n  const parts = content.split(/(\\*\\*.*?\\*\\*)/g);\n\n  return parts\n    .map((part) => {\n      if (part.startsWith(\"**\") && part.endsWith(\"**\")) {\n        // 볼드 처리\n        return {\n          text: { content: part.slice(2, -2) },\n          annotations: { bold: true },\n        };\n      }\n      // 일반 텍스트\n      return { text: { content: part } };\n    })\n    .filter((p) => p.text.content.length > 0);\n}\n\n/**\n * 줄바꿈과 글머리 기호를 인식하여 Notion 블록으로 변환\n */\nfunction processSmartBlocks(content) {\n  if (!content) return [blocks.markdownText(\"N/A\")];\n\n  // 줄바꿈으로 나누고 빈 줄 제거\n  const lines = content.split(\"\\n\").filter((l) => l.trim().length > 0);\n\n  return lines.map((line) => {\n    const trimmed = line.trim();\n    // '-', '•', '*' 로 시작하는 경우 불렛 블록으로 생성\n    if (/^[-•*]\\s+/.test(trimmed)) {\n      const cleanText = trimmed.replace(/^[-•*]\\s+/, \"\");\n      return blocks.bullet(cleanText);\n    }\n    // 일반 텍스트인 경우 단락 블록 생성\n    return blocks.markdownText(trimmed);\n  });\n}\n\n// Notion 블록 생성 유틸리티\nconst blocks = {\n  heading: (text, level = 2) => ({\n    object: \"block\",\n    type: `heading_${level}`,\n    [`heading_${level}`]: { rich_text: [{ text: { content: text } }] },\n  }),\n  markdownText: (content) => ({\n    object: \"block\",\n    type: \"paragraph\",\n    paragraph: { rich_text: parseMarkdown(content).slice(0, 50) },\n  }),\n  todo: (content) => ({\n    object: \"block\",\n    type: \"to_do\",\n    to_do: {\n      rich_text: parseMarkdown(content),\n      checked: false,\n    },\n  }),\n  callout: (content, icon = \"💡\") => ({\n    object: \"block\",\n    type: \"callout\",\n    callout: {\n      rich_text: parseMarkdown(content),\n      icon: { emoji: icon },\n      color: \"blue_background\",\n    },\n  }),\n  code: (content, language = \"javascript\") => ({\n    object: \"block\",\n    type: \"code\",\n    code: {\n      rich_text: [{ text: { content: content.slice(0, 2000) } }],\n      language: language,\n    },\n  }),\n  bullet: (content) => ({\n    object: \"block\",\n    type: \"bulleted_list_item\",\n    bulleted_list_item: { rich_text: parseMarkdown(content) },\n  }),\n  divider: () => ({ object: \"block\", type: \"divider\", divider: {} }),\n  emptyBlock: () => ({ object: \"block\", type: \"paragraph\", paragraph: { rich_text: [] } }),\n};\n\n// Notion 페이지 제목 및 속성 설정\nconst riskEmoji = data.riskLevel === \"HIGH\" ? \"🔴\" : data.riskLevel === \"MEDIUM\" ? \"🟠\" : \"🟡\";\nconst pageTitle = `${data.riskLevel}: ${data.error?.message || data.title}`.slice(0, 100);\n\n// 테스트 단계를 개별 to_do 블록 배열로 변환\nconst testStepBlocks =\n  Array.isArray(data.testSteps) && data.testSteps.length > 0\n    ? data.testSteps.map((step) => blocks.todo(step))\n    : [blocks.todo(\"수동 테스트 및 검증 수행\")];\n\n// 노션 페이지 생성용 JSON 구조\nconst notionBody = {\n  parent: { database_id: \"30bc8de20bcb80aeb2f5f99848653d4a\" },\n  icon: { emoji: riskEmoji },\n  properties: {\n    Name: {\n      title: [{ text: { content: pageTitle } }],\n    },\n    Status: {\n      select: { name: \"Open\" },\n    },\n    \"Risk Level\": {\n      select: { name: data.riskLevel || \"MEDIUM\" },\n    },\n    Environment: {\n      select: { name: data.context?.env || \"unknown\" },\n    },\n    \"File Path\": {\n      rich_text: [{ text: { content: data.fixFilePath || \"unknown\" } }],\n    },\n    \"URL Path\": {\n      select: { name: data.context?.path || \"/\" },\n    },\n    \"Error Type\": {\n      select: { name: data.error?.name || \"Error\" },\n    },\n    Timestamp: {\n      date: { start: data.timestamp || new Date().toISOString() },\n    },\n  },\n  children: [\n    blocks.heading(\"💡 AI 원인 분석\", 2),\n    blocks.divider(),\n    blocks.callout(data.problemAnalysis || \"분석 내용 없음\", \"🔍\"),\n\n    blocks.emptyBlock(),\n\n    blocks.heading(\"🛠️ 수정 전략 및 내용\", 2),\n    blocks.divider(),\n    blocks.markdownText(`**수정 전략:**`),\n    blocks.markdownText(`${data.fixStrategy || \"N/A\"}`),\n\n    blocks.emptyBlock(),\n\n    blocks.markdownText(`**상세 변경 내용:**`),\n    ...processSmartBlocks(data.fixContent),\n\n    blocks.emptyBlock(),\n\n    blocks.heading(`📝 수정 코드 (${data.fixFilePath})`, 2),\n    blocks.divider(),\n    blocks.code(cleanFixCode, \"javascript\"),\n\n    blocks.emptyBlock(),\n\n    blocks.heading(\"🚨 에러 상세 로그\", 2),\n    blocks.divider(),\n    blocks.markdownText(`**에러명:** ${data.error?.name || \"Error\"}`),\n    blocks.markdownText(`**발생 위치:** ${data.error?.primaryLocation}`),\n    blocks.markdownText(`**호출 경로:** ${data.error?.stackSummary}`),\n    blocks.markdownText(`**관련 파일:** ${relatedFiles}`),\n\n    blocks.emptyBlock(),\n\n    blocks.heading(\"🔍 원본 스택 트레이스\", 3),\n    blocks.code(data.error?.stack || \"원본 스택 정보 없음\", \"plain text\"),\n\n    blocks.emptyBlock(),\n\n    blocks.heading(\"🔗 콜사이트 스택 (신고 지점)\", 3),\n    blocks.code(data.callSiteStack || \"콜사이트 정보 없음\", \"plain text\"),\n\n    blocks.emptyBlock(),\n\n    blocks.heading(\"✅ 테스트 체크리스트\", 2),\n    blocks.divider(),\n    ...testStepBlocks,\n  ],\n};\n\nreturn [{ json: { notionBody } }];"
       },
-      "name": "Prepare GitHub PR",
+      "name": "Build Notion Page",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -108,138 +95,61 @@
     },
     {
       "parameters": {
-        "method": "GET",
-        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/git/ref/heads/dev",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "headerAuth",
+        "method": "POST",
+        "url": "https://api.notion.com/v1/pages",
+        "authentication": "predefinedCredentialType",
+        "genericAuthType": "notionApi",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
-              "name": "Accept",
-              "value": "application/vnd.github.v3+json"
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
             }
           ]
         },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.notionBody) }}",
         "options": {}
       },
-      "name": "Get Dev Branch SHA",
+      "name": "Create Notion Issue",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
         2000,
         350
       ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/git/refs",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "headerAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/vnd.github.v3+json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ ref: 'refs/heads/' + $('Prepare GitHub PR').first().json.branchName, sha: $json.object.sha }) }}",
-        "options": {}
-      },
-      "name": "Create Fix Branch",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2250,
-        350
-      ]
-    },
-    {
-      "parameters": {
-        "method": "PUT",
-        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/contents/{{ $('Prepare GitHub PR').first().json.path }}",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "headerAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/vnd.github.v3+json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ message: $('Prepare GitHub PR').first().json.commitMsg, content: $('Prepare GitHub PR').first().json.base64Content, sha: $('Prepare GitHub PR').first().json.fileSha, branch: $('Prepare GitHub PR').first().json.branchName }) }}",
-        "options": {}
-      },
-      "name": "Commit Fix",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2500,
-        350
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.github.com/repos/KimDongGyun23/n8n-test/pulls",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "headerAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/vnd.github.v3+json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ title: $('Prepare GitHub PR').first().json.prTitle, body: $('Prepare GitHub PR').first().json.prBody, head: $('Prepare GitHub PR').first().json.branchName, base: 'dev', draft: true }) }}",
-        "options": {}
-      },
-      "name": "Create Draft PR",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2750,
-        350
-      ]
     }
   ],
   "connections": {
-    "Sentry Webhook": {
+    "Error Webhook": {
       "main": [
         [
           {
-            "node": "Extract Sentry Error",
+            "node": "Extract Error Info",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Extract Sentry Error": {
+    "Extract Error Info": {
       "main": [
         [
           {
-            "node": "Fetch Source From GitHub",
+            "node": "Read Source Files",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Fetch Source From GitHub": {
+    "Read Source Files": {
       "main": [
         [
           {
@@ -276,51 +186,18 @@
       "main": [
         [
           {
-            "node": "Prepare GitHub PR",
+            "node": "Build Notion Page",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Prepare GitHub PR": {
+    "Build Notion Page": {
       "main": [
         [
           {
-            "node": "Get Dev Branch SHA",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Get Dev Branch SHA": {
-      "main": [
-        [
-          {
-            "node": "Create Fix Branch",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Create Fix Branch": {
-      "main": [
-        [
-          {
-            "node": "Commit Fix",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Commit Fix": {
-      "main": [
-        [
-          {
-            "node": "Create Draft PR",
+            "node": "Create Notion Issue",
             "type": "main",
             "index": 0
           }
