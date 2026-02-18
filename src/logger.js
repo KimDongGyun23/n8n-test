@@ -12,9 +12,9 @@ const recentErrors = new Map();
  */
 function isDuplicate(errorKey) {
   const now = Date.now();
-  if (recentErrors.has(errorKey)) {
-    const timestamp = recentErrors.get(errorKey);
-    if (now - timestamp < RECENT_ERROR_TTL) return true;
+  const lastTimestamp = recentErrors.get(errorKey);
+  if (lastTimestamp && now - lastTimestamp < RECENT_ERROR_TTL) {
+    return true;
   }
   recentErrors.set(errorKey, now);
 
