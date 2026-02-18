@@ -8,10 +8,10 @@ export function useFetchPost() {
 
   /**
    * fetchPost: JSONPlaceholder API에서 포스트 데이터를 가져오는 함수
-   * - postId: 가져올 포스트의 ID (기본값 999, 존재하지 않는 ID로 에러 유발)
+   * - postId: 가져올 포스트의 ID (기본값 1, 존재하는 모든 ID로 수정)
    * - 로딩 상태 관리, 에러 처리, Sentry 예외 캡처 포함
    */
-  const fetchPost = useCallback(async (postId = 999) => {
+  const fetchPost = useCallback(async (postId = 1) => {
     setLoading(true);
     setError(null);
     try {
@@ -37,7 +37,7 @@ export function useFetchPost() {
           logContext: {
             tags: { source: "api-validation", endpoint: `/posts/${postId}` },
             extra: { receivedData: data, expected: "userId present" },
-          },
+          }
         });
         throw validationError;
       }
