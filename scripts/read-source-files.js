@@ -9,8 +9,8 @@ const path = require("path");
 
 const data = $input.first().json;
 
-// srcFiles는 extract-error.js에서 추출된 에러 발생 위치 정보 배열 (최대 3개)
-const srcFiles = (data.error?.srcFiles ?? []).slice(0, 3);
+// srcFiles는 extract-error.js에서 추출된 에러 발생 위치 정보 배열
+const srcFiles = data.error?.srcFiles ?? [];
 
 /**
  * 각 srcFile에 대해 절대 경로 계산, 존재 여부 확인, 코드 스니펫 생성

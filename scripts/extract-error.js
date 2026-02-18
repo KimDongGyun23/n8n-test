@@ -11,7 +11,7 @@ const body = item.json.body || item.json;
 const { error = {}, callSite = {}, meta = {} } = body;
 
 // 모든 트레이스 합치기 (에러 발생 지점이 앞서도록 순서 유지)
-const allTraces = [...(error.traces || []), ...(callSite.traces || [])];
+const allTraces = [...(error.traces || []), ...(callSite.traces || [])].slice(0, 3);
 
 const seen = new Set();
 const srcFiles = [];
