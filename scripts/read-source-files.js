@@ -68,7 +68,6 @@ return [
     json: {
       ...data,
       files,
-      primarySnippet: files[0]?.codeSnippet || "코드 스니펫을 생성할 수 없습니다.",
       primaryFile: files[0]?.file || "unknown",
     },
   },
