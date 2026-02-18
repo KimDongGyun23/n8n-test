@@ -10,7 +10,7 @@ function App() {
 
   return (
     <div className="app">
-      <h1>JSONPlaceholder + Sentry 테스트</h1>
+      <h1>JSONPlaceholder + n8n 테스트</h1>
       <button onClick={() => fetchPost(1)}>정상 post#1 불러오기</button>
       <button onClick={() => fetchPost(999)}>에러 post#999 (없음)</button>
 
