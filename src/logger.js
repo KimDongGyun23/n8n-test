@@ -51,7 +51,7 @@ function createPayload(error, callSiteStack) {
 export const logger = {
   error(error, extra = {}) {
     // 중복 체크
-    const errorKey = `${error.message}-${error.stack?.slice(0, 100)}`;
+    const errorKey = `${error.message}-${error.stack?.slice(0, 20)}`;
     if (isDuplicate(errorKey)) return;
 
     // 에러 호출 지점 스택 캡처
